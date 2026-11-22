@@ -1,0 +1,62 @@
+name: 공문달력 exe 만들기
+
+on:
+  push:
+    branches: [claude/official-calendar-folder-setup-cd0u0p]
+    paths:
+      - "공문달력ver/달력/**"
+      - "공문달력ver/사용설명.txt"
+      - ".github/workflows/build-exe.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install
+        run: pip install pyinstaller==6.11.1 pypdf==5.1.0
+
+      - name: Build exe
+        working-directory: 공문달력ver/달력
+        run: >
+          pyinstaller --noconfirm --onefile --windowed --name GongmunCalendar
+          --hidden-import gongmun_xlsx --hidden-import gongmun_pdf --hidden-import gongmun_system
+          --hidden-import gongmun_rename --hidden-import pypdf
+          gongmun_calendar.py
+
+      - name: Zip
+        shell: python
+        run: |
+          import os, zipfile
+          base = os.path.join("공문달력ver", "달력", "dist", "GongmunCalendar.exe")
+          os.makedirs(os.path.join("공문달력ver", "배포"), exist_ok=True)
+          out = os.path.join("공문달력ver", "배포", "공문달력.zip")
+          with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
+              z.write(base, "공문달력/공문달력.exe")
+              z.write(os.path.join("공문달력ver", "사용설명.txt"), "공문달력/사용설명.txt")
+          print(out, os.path.getsize(out))
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: 공문달력
+          path: 공문달력ver/배포/공문달력.zip
+
+      - name: Commit zip
+        shell: bash
+        run: |
+          git config core.quotepath false
+          git config user.name "github-actions[bot]"
+          git config user.email "41898277+github-actions[bot]@users.noreply.github.com"
+          git add 공문달력ver/배포/공문달력.zip
+          git commit -m "공문달력 exe 빌드 결과 (자동)" || exit 0
+          git pull --rebase origin "${GITHUB_REF_NAME}"
+          git push origin "HEAD:${GITHUB_REF_NAME}"
