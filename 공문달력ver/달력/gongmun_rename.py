@@ -36,8 +36,8 @@ DATE_FORMATS = {
     "YYYY-MM-DD": "{y}-{m:02d}-{d:02d}",
     "YYMMDD": "{y2}{m:02d}{d:02d}",
 }
-DEFAULT_TEMPLATE = "{시행일자}_{제목}_{시행기관}"
-OLD_TEMPLATES = ("{제목}_{시행기관}_{시행일자}",)   # 예전 기본값 - 저장돼 있으면 새 기본값으로 바꿈
+DEFAULT_TEMPLATE = "{제목}"                         # 연도·월은 폴더(공문정리\2026년\11월)로 나누므로 이름은 제목만
+OLD_TEMPLATES = ("{제목}_{시행기관}_{시행일자}", "{시행일자}_{제목}_{시행기관}")   # 예전 기본값 - 저장돼 있으면 새 기본값으로 바꿈
 DEFAULT_DATE_FORMAT = "YYYY.MM.DD"
 MAX_NAME_LEN = 150  # 확장자 제외. 윈도우 경로 길이 제한(260자) 여유
 
@@ -243,3 +243,9 @@ if __name__ == "__main__":  # 명령창에서 바로 확인: py gongmun_core.py 
     for arg in sys.argv[1:]:
         inf = analyze(arg)
         print(arg, "->", inf.error or build_name(inf, DEFAULT_TEMPLATE, DEFAULT_DATE_FORMAT), inf.notes)
+
+
+def template_of(settings: dict) -> str:
+    """저장된 이름 형식. 예전 기본값이면 새 기본값으로 바꿔 준다."""
+    tpl = settings.get("rename_template") or DEFAULT_TEMPLATE
+    return DEFAULT_TEMPLATE if tpl in OLD_TEMPLATES else tpl

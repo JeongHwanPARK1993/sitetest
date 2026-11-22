@@ -125,7 +125,7 @@ def parse_date_text(text):
 
 
 def store_document(app, events, source, text, title, stem, rename_orig, month=None):
-    """공문 한 건 저장: (원본 이름 바꾸기) → 공문보관에 사본 → 일정 저장.
+    """공문 한 건 저장: (원본 이름 바꾸기) → 공문정리\연도\월 에 사본 → 일정 저장.
     돌려주는 값: (보관 파일, 경고 목록)"""
     warns = []
     if stem and rename_orig and source and os.path.isfile(source):
@@ -152,6 +152,15 @@ def store_document(app, events, source, text, title, stem, rename_orig, month=No
     return doc_file, warns
 
 
+def doc_month(info, doc_date=None):
+    """공문을 정리할 달 'YYYY-MM': PDF 시행일 → 본문 머리말 날짜 → (없으면 None = 일정 날짜의 달)"""
+    if info is not None and info.year:
+        return "%04d-%02d" % (info.year, info.month)
+    if doc_date:
+        return doc_date.strftime("%Y-%m")
+    return None
+
+
 def make_event(date_iso, time_text, kind, snippet, common):
     ev = {"date": date_iso, "time": time_text, "kind": kind, "snippet": snippet}
     for k, v in common.items():                         # 할 일 목록은 일정마다 따로 복사
@@ -170,6 +179,7 @@ class AddDialog:
         self.rows = []                                  # 날짜 후보 한 줄 한 줄
         self.rename_info = None                         # PDF 에서 읽은 제목·시행정보 (rn.DocInfo)
         self.emails = []
+        self.doc_date = None
 
         win = self.win = tk.Toplevel(app.root)
         win.title("공문 추가")
@@ -213,7 +223,7 @@ class AddDialog:
         s = app.settings
         self.title_var, self.docno_var, self.org_var = tk.StringVar(), tk.StringVar(), tk.StringVar()
         self.name_var = tk.StringVar()
-        self.tpl_var = tk.StringVar(value=s.get("rename_template", rn.DEFAULT_TEMPLATE))
+        self.tpl_var = tk.StringVar(value=rn.template_of(s))
         self.datefmt_var = tk.StringVar(value=s.get("rename_date_fmt", rn.DEFAULT_DATE_FORMAT))
         self.rename_orig = tk.BooleanVar(value=bool(s.get("rename_original", False)))
 
@@ -313,6 +323,7 @@ class AddDialog:
         self.todo_text.delete("1.0", "end")
         self.todo_text.insert("1.0", "\n".join(result.get("todos") or result["requests"]))
         self.emails = result["emails"]
+        self.doc_date = result.get("doc_date")         # 공문 머리말의 시행·기안 날짜 (정리할 달)
 
         for r in self.rows:                             # 이전 결과 지우기
             r["widgets"].destroy()
@@ -351,7 +362,7 @@ class AddDialog:
         self.rename_info = None
         self.name_var.set("")
         if os.path.splitext(path)[1].lower() != ".pdf":
-            self.name_note.config(text="PDF 가 아니어서 이름은 [날짜_제목] 으로 보관합니다. (직접 적어도 돼요)")
+            self.name_note.config(text="PDF 가 아니어서 제목으로 정리합니다. (직접 적어도 돼요)")
             return
         info = rn.analyze(path)
         if not info.ok:
@@ -373,7 +384,8 @@ class AddDialog:
         info = rn.DocInfo(**{**self.rename_info.__dict__, "title": self.title_var.get().strip() or self.rename_info.title,
                              "org": self.org_var.get().strip() or self.rename_info.org})
         self.name_var.set(rn.build_name(info, self.tpl_var.get(), self.datefmt_var.get()))
-        self.name_note.config(text=("⚠ 확인 필요: " + " / ".join(notes)) if notes else "✔ 공문에서 이름을 만들었어요. 고쳐도 됩니다.")
+        where = core.archive_subdir("%04d-%02d" % (info.year, info.month)) if info.year else core.ARCHIVE_DIR
+        self.name_note.config(text=("⚠ 확인 필요: " + " / ".join(notes)) if notes else "✔ 등록하면 " + where + "\\ 에 이 이름으로 정리됩니다.")
 
     # ---- 등록 ----------------------------------------------------------
     def register(self):
@@ -413,7 +425,7 @@ class AddDialog:
         s["rename_original"] = self.rename_orig.get()
         core.save_settings(s)
         info = self.rename_info
-        month = "%04d-%02d" % (info.year, info.month) if info and info.year else None   # 시행한 달 폴더에 보관
+        month = doc_month(info, self.doc_date)          # 기안(시행)한 달 폴더에 정리
         doc_file, warns = store_document(self.app, new_events, self.source, text, title, stem, self.rename_orig.get(), month)
         self.app.go_to(dt.date.fromisoformat(new_events[0]["date"]))
         msg = "%d건을 달력에 등록했습니다.\n공문 사본: %s" % (len(new_events), doc_file or "없음")
@@ -528,7 +540,7 @@ class BatchDialog:
         title = (info.title if ok and info.title else res["title"]) or os.path.splitext(os.path.basename(path))[0]
         docno = info.number if ok and info.number else res["doc_no"]
         s = self.app.settings
-        stem = rn.build_name(rn.DocInfo(**{**info.__dict__, "title": title}), s.get("rename_template", rn.DEFAULT_TEMPLATE),
+        stem = rn.build_name(rn.DocInfo(**{**info.__dict__, "title": title}), rn.template_of(s),
                              s.get("rename_date_fmt", rn.DEFAULT_DATE_FORMAT)) if ok else ""
         picks = [c for c in res["candidates"] if c["checked"]]
         it.update(text=text, res=res, info=info if ok else None, title=title, docno=docno, stem=stem, picks=picks,
@@ -549,7 +561,7 @@ class BatchDialog:
                 when += " 외 %d" % (len(picks) - 1)
         mark = "✔" if it.get("check") else ("완료" if it.get("done") else "☐")
         self.tree.item(it["iid"], values=(mark, os.path.basename(it["path"]), it.get("title", ""), when,
-                                          (it["stem"] + os.path.splitext(it["path"])[1]) if it.get("stem") else "[날짜_제목] 으로 보관",
+                                          (it["stem"] + os.path.splitext(it["path"])[1]) if it.get("stem") else "제목으로 정리",
                                           it["state"]),
                        tags=(it["tag"],) if it.get("tag") else ())
 
@@ -615,8 +627,7 @@ class BatchDialog:
                       "todos": [{"text": t, "done": False} for t in (res.get("todos") or res["requests"])],
                       "refs": core.find_doc_refs(it["text"], it["docno"])}
             events = [make_event(c["date"].isoformat(), c.get("time", ""), c["kind"], c["snippet"], common) for c in it["picks"]]
-            info = it.get("info")
-            month = "%04d-%02d" % (info.year, info.month) if info and info.year else None
+            month = doc_month(it.get("info"), res.get("doc_date"))
             _, w = store_document(self.app, events, it["path"], it["text"], it["title"], it["stem"], self.rename_orig.get(), month)
             warns += ["%s: %s" % (os.path.basename(it["path"]), x) for x in w]
             n_ev += len(events)
@@ -718,7 +729,7 @@ class SettingsDialog:
         p = page(" 📁 공유 폴더 ")
         ttk.Label(p, text="팀원과 같은 달력 쓰기", style="Head.TLabel").grid(row=0, column=0, columnspan=3, sticky="w")
         ttk.Label(p, style="Sub.TLabel", justify="left", text=(
-            "공유 드라이브(예: \\\\서버\\팀공유\\공문달력)를 지정하면, 일정 파일과 공문보관 폴더를 그곳에 둡니다.\n"
+            "공유 드라이브(예: \\\\서버\\팀공유\\공문달력)를 지정하면, 일정 파일과 공문정리 폴더를 그곳에 둡니다.\n"
             "같은 폴더를 지정한 팀원끼리 일정이 같이 보이고, 15초마다 새로 고칩니다.\n"
             "동시에 고쳐도 더 나중에 고친 내용이 남고, 지운 일정은 모두에게서 지워집니다.\n"
             "(근무팀·알림·위젯 같은 설정은 각자 PC 에 따로 저장됩니다)")).grid(row=1, column=0, columnspan=3, sticky="w", pady=(8, 12))
@@ -733,8 +744,8 @@ class SettingsDialog:
 
         # ---- 파일 이름
         p = page(" 📝 파일 이름 ")
-        ttk.Label(p, text="공문 PDF 를 보관할 때 붙일 이름", style="Head.TLabel").grid(row=0, column=0, columnspan=3, sticky="w")
-        self.tpl_var = tk.StringVar(value=st.get("rename_template", rn.DEFAULT_TEMPLATE))
+        ttk.Label(p, text="공문을 정리할 때 붙일 파일 이름", style="Head.TLabel").grid(row=0, column=0, columnspan=3, sticky="w")
+        self.tpl_var = tk.StringVar(value=rn.template_of(st))
         self.datefmt_var = tk.StringVar(value=st.get("rename_date_fmt", rn.DEFAULT_DATE_FORMAT))
         ttk.Label(p, text="이름 형식").grid(row=1, column=0, sticky="w", pady=(12, 2))
         ttk.Entry(p, textvariable=self.tpl_var, width=40).grid(row=1, column=1, sticky="w", padx=6, pady=(12, 2))
@@ -747,7 +758,7 @@ class SettingsDialog:
         self.preview.grid(row=3, column=0, columnspan=3, sticky="w", pady=(10, 0))
         ttk.Label(p, style="Sub.TLabel", justify="left", text=(
             "쓸 수 있는 말: {시행일자} {제목} {시행기관} {문서번호}\n"
-            "공문 보관 폴더는 달마다 나뉩니다:  공문보관\\2026-11\\…")).grid(row=4, column=0, columnspan=3, sticky="w", pady=(10, 0))
+            "올린 공문은 연도 · 기안한 달별로 자동 정리됩니다:  공문정리\\2026년\\11월\\제목.pdf")).grid(row=4, column=0, columnspan=3, sticky="w", pady=(10, 0))
         for v in (self.tpl_var, self.datefmt_var):
             v.trace_add("write", lambda *_: self.update_preview())
         self.update_preview()
@@ -766,7 +777,7 @@ class SettingsDialog:
     def update_preview(self):
         sample = rn.DocInfo(title="2026년 현장지휘관 협조 요청", org="소방행정과", number="소방행정과-11072",
                             year=2026, month=11, day=16)
-        self.preview.config(text="예시:  " + rn.build_name(sample, self.tpl_var.get(), self.datefmt_var.get()) + ".pdf")
+        self.preview.config(text="예시:  공문정리\\2026년\\11월\\" + rn.build_name(sample, self.tpl_var.get(), self.datefmt_var.get()) + ".pdf")
 
     def save(self):
         try:
@@ -1896,7 +1907,7 @@ class App:
     def open_event_doc(self, ev):
         path = core.resolve_doc_path(ev)
         if not path:
-            messagebox.showinfo("안내", "저장된 공문 파일을 찾지 못했습니다.\n(공문보관 폴더에서 옮기거나 지운 경우일 수 있어요)", parent=self.root)
+            messagebox.showinfo("안내", "저장된 공문 파일을 찾지 못했습니다.\n(공문정리 폴더에서 옮기거나 지운 경우일 수 있어요)", parent=self.root)
             return
         try:
             open_with_default_app(path)

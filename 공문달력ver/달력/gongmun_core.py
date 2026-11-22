@@ -13,6 +13,7 @@ gongmun_core.py  -  공문에서 '기한'을 찾아내는 핵심 부분 (화면 
 """
 import datetime as dt
 import csv
+import filecmp
 import json
 import os
 import re
@@ -39,7 +40,7 @@ _SHARED_DIR = ""                                        # 팀 공유 폴더 (비
 
 
 def set_shared_dir(path):
-    """일정 파일(공문일정.json)과 공문보관 폴더를 둘 곳을 정한다. 빈 값이면 프로그램 폴더."""
+    """일정 파일(공문일정.json)과 공문정리 폴더를 둘 곳을 정한다. 빈 값이면 프로그램 폴더."""
     global _SHARED_DIR
     _SHARED_DIR = path if path and os.path.isdir(path) else ""
     return _SHARED_DIR
@@ -798,34 +799,46 @@ def team_for(day, st):
 
 
 # ──────────────────────────────────────────────────────────────
-# 9. 공문 보관: 불러온 공문(PDF 등)을 '공문보관' 폴더에 [날짜_제목] 이름으로 복사
-#    (온나라에서 받은 DOSDKML.pdf 같은 이름이 공문 제목으로 바뀐다)
+# 9. 공문 정리: 올린 공문(PDF 등)을 '공문정리\2026년\11월\' 폴더에 제목 이름으로 복사
+#    (온나라에서 받은 DOSDKML.pdf 같은 이름이 공문 제목으로 바뀌고, 연도·기안한 달별로 정리된다)
 # ──────────────────────────────────────────────────────────────
+ARCHIVE_DIR = "공문정리"
+
+
 def safe_filename(name, maxlen=60):
     name = re.sub(r'[\\/:*?"<>|\r\n\t]', " ", name)
     name = re.sub(r"\s+", " ", name).strip(" .")
     return name[:maxlen].strip(" .") or "공문"
 
 
+def archive_subdir(month):
+    """'2026-11' -> 공문정리\2026년\11월"""
+    y, m = month.split("-")[:2]
+    return os.path.join(ARCHIVE_DIR, "%s년" % y, "%02d월" % int(m))
+
+
 def archive_document(source, text, title, date_iso, stem=None, month=None):
-    """공문 사본을 보관하고 '프로그램 폴더 기준 상대경로'를 돌려준다.
-    stem 이 있으면 그 이름(확장자 제외)으로 저장하고, 없으면 [날짜_제목] 으로 저장한다."""
-    month = month or (date_iso or dt.date.today().isoformat())[:7]   # 2026-11 처럼 달마다 폴더를 나눈다
-    folder = shared_path(os.path.join("공문보관", month))
+    """공문 사본을 공문정리\연도\월 폴더에 보관하고 '프로그램 폴더 기준 상대경로'를 돌려준다.
+    month = 기안(시행)한 달 'YYYY-MM' (모르면 일정 날짜의 달).  stem 이 없으면 제목을 파일 이름으로 쓴다."""
+    month = month or (date_iso or dt.date.today().isoformat())[:7]
+    sub = archive_subdir(month)
+    folder = shared_path(sub)
     os.makedirs(folder, exist_ok=True)
     has_file = bool(source) and os.path.isfile(source)
     ext = (os.path.splitext(source)[1] if has_file else "") or ".txt"
-    base = safe_filename(stem, 150) if stem else "%s_%s" % (date_iso, safe_filename(title))
+    base = safe_filename(stem or title, 150)
     dest, n = os.path.join(folder, base + ext), 2
-    while os.path.exists(dest):                         # 같은 이름이 있으면 _2, _3 ...
-        dest = os.path.join(folder, "%s_%d%s" % (base, n, ext))
+    while os.path.exists(dest):
+        if has_file and filecmp.cmp(source, dest, shallow=False):
+            return os.path.join(sub, os.path.basename(dest))    # 똑같은 공문을 또 올리면 사본을 또 만들지 않는다
+        dest = os.path.join(folder, "%s (%d)%s" % (base, n, ext))   # 이름만 같은 다른 공문이면 (2), (3) ...
         n += 1
     if has_file:
         shutil.copy2(source, dest)
     else:                                               # 붙여넣기로 넣은 공문은 글자 파일로 보관
         with open(dest, "w", encoding="utf-8") as f:
             f.write(text)
-    return os.path.join("공문보관", month, os.path.basename(dest))
+    return os.path.join(sub, os.path.basename(dest))
 
 
 def resolve_doc_path(ev):
