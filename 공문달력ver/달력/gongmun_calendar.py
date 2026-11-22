@@ -2,7 +2,8 @@
 """
 gongmun_calendar.py  -  공문 달력 (화면 부분)
 
-실행:  python gongmun_calendar.py
+실행:  python gongmun_calendar.py            (전체 화면)
+       python gongmun_calendar.py --widget   (바탕화면 위젯만)
 
 화면 구성
   [상단 바]  공문 추가 / 달 이동 / 오늘 근무팀 / 업무 현황 / 근무 설정 / .ics 내보내기
@@ -551,8 +552,178 @@ class AchievementWindow:
 # ══════════════════════════════════════════════════════════════
 #  메인 창 (달력)
 # ══════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════
+#  바탕화면 위젯  (테두리 없는 작은 창: 오늘 근무팀 + 오늘/임박 일정)
+#    - 위쪽 날짜 줄을 끌면 이동 / 오른쪽 아래 ◢ 를 끌면 크기 조절
+#    - 📌 항상 위 켜기·끄기 / ◐ 투명도 / ▣ 달력 열기 / ✕ 닫기 / 우클릭 메뉴
+# ══════════════════════════════════════════════════════════════
+class WidgetWindow:
+    BG = "#1f2430"
+    HEAD = "#2a3040"
+    FG = "#f2f4f8"
+    SUB = "#9aa3b5"
+
+    def __init__(self, app):
+        self.app = app
+        self.cfg = app.settings.setdefault("widget", {})
+        self.win = tk.Toplevel(app.root)
+        self.win.overrideredirect(True)                 # 테두리·제목 표시줄 없애기
+        self.win.configure(bg=self.BG)
+        self.topmost = bool(self.cfg.get("topmost", True))
+        self.alpha = float(self.cfg.get("alpha", 0.92))
+        w, h = int(self.cfg.get("w", 300)), int(self.cfg.get("h", 420))
+        x, y = int(self.cfg.get("x", 60)), int(self.cfg.get("y", 60))
+        self.win.geometry("%dx%d+%d+%d" % (w, h, x, y))
+        self.apply_window_attrs()
+        self._drag = (0, 0)
+        self._job = None
+        self.rows = []                                  # 화면에 보이는 일정들 (클릭할 때 쓴다)
+
+        self.head = tk.Frame(self.win, bg=self.HEAD)
+        self.head.pack(fill="x")
+        self.date_lb = tk.Label(self.head, font=(FONT, 13, "bold"), fg=self.FG, bg=self.HEAD, anchor="w")
+        self.date_lb.pack(side="left", padx=(10, 4), pady=6)
+        self.team_lb = tk.Label(self.head, font=(FONT, 9, "bold"), fg="#ffffff", bg="#777777", padx=6)
+        self.team_lb.pack(side="left")
+        for text, cmd in (("✕", self.close), ("▣", self.show_main), ("◐", self.cycle_alpha), ("📌", self.toggle_topmost)):
+            b = tk.Label(self.head, text=text, font=(FONT, 10), fg=self.SUB, bg=self.HEAD, cursor="hand2", padx=4)
+            b.pack(side="right")
+            b.bind("<Button-1>", lambda e, c=cmd: c())
+            b.bind("<Enter>", lambda e, w=b: w.config(fg=self.FG))
+            b.bind("<Leave>", lambda e, w=b: w.config(fg=self.SUB))
+            if text == "📌":
+                self.pin_lb = b
+
+        self.body = tk.Frame(self.win, bg=self.BG)
+        self.body.pack(fill="both", expand=True, padx=8, pady=(6, 14))
+
+        grip = tk.Label(self.win, text="◢", font=(FONT, 9), fg=self.SUB, bg=self.BG, cursor="sizing")
+        grip.place(relx=1.0, rely=1.0, anchor="se")
+        grip.bind("<Button-1>", self.start_resize)
+        grip.bind("<B1-Motion>", self.do_resize)
+        grip.bind("<ButtonRelease-1>", lambda e: self.save_cfg())
+
+        for wdg in (self.head, self.date_lb, self.team_lb):   # 날짜 줄을 끌어서 이동
+            wdg.bind("<Button-1>", self.start_move)
+            wdg.bind("<B1-Motion>", self.do_move)
+            wdg.bind("<ButtonRelease-1>", lambda e: self.save_cfg())
+        for wdg in (self.win, self.head, self.body):
+            for b3 in ("<Button-3>", "<Button-2>"):
+                wdg.bind(b3, self.popup)
+
+        self.menu = tk.Menu(self.win, tearoff=0)
+        self.menu.add_command(label="항상 위 켜기/끄기", command=self.toggle_topmost)
+        self.menu.add_command(label="투명도 바꾸기", command=self.cycle_alpha)
+        self.menu.add_command(label="달력 열기", command=self.show_main)
+        self.menu.add_separator()
+        self.menu.add_command(label="위젯 닫기", command=self.close)
+
+        self.refresh()
+        self.tick()
+
+    # ---- 창 속성 ---------------------------------------------------------
+    def apply_window_attrs(self):
+        try:
+            self.win.attributes("-topmost", self.topmost)
+            self.win.attributes("-alpha", self.alpha)
+        except tk.TclError:                             # 일부 환경은 투명도를 지원하지 않는다
+            pass
+
+    def toggle_topmost(self):
+        self.topmost = not self.topmost
+        self.apply_window_attrs()
+        self.pin_lb.config(fg=self.FG if self.topmost else self.SUB)
+        self.save_cfg()
+
+    def cycle_alpha(self):
+        steps = [1.0, 0.92, 0.8, 0.65, 0.5]
+        nxt = [a for a in steps if a < self.alpha - 0.01]
+        self.alpha = nxt[0] if nxt else steps[0]
+        self.apply_window_attrs()
+        self.save_cfg()
+
+    def save_cfg(self):
+        self.cfg.update({"x": self.win.winfo_x(), "y": self.win.winfo_y(),
+                         "w": self.win.winfo_width(), "h": self.win.winfo_height(),
+                         "topmost": self.topmost, "alpha": round(self.alpha, 2)})
+        core.save_settings(self.app.settings)
+
+    # ---- 이동·크기 조절 --------------------------------------------------
+    def start_move(self, e):
+        self._drag = (e.x_root - self.win.winfo_x(), e.y_root - self.win.winfo_y())
+
+    def do_move(self, e):
+        self.win.geometry("+%d+%d" % (e.x_root - self._drag[0], e.y_root - self._drag[1]))
+
+    def start_resize(self, e):
+        self._drag = (e.x_root, e.y_root, self.win.winfo_width(), self.win.winfo_height())
+
+    def do_resize(self, e):
+        w = max(220, self._drag[2] + e.x_root - self._drag[0])
+        h = max(200, self._drag[3] + e.y_root - self._drag[1])
+        self.win.geometry("%dx%d" % (w, h))
+
+    def popup(self, e):
+        self.menu.tk_popup(e.x_root, e.y_root)
+
+    # ---- 내용 ------------------------------------------------------------
+    def refresh(self):
+        app = self.app
+        today = dt.date.today()
+        self.date_lb.config(text="%d월 %d일 (%s)" % (today.month, today.day, "월화수목금토일"[today.weekday()]))
+        team = core.team_for(today, app.settings)
+        if team:
+            self.team_lb.config(text="%d팀 근무" % team, bg=TEAM_COLORS.get(team, "#7a4fd6"))
+        else:
+            self.team_lb.config(text="팀 미설정", bg="#777777")
+        self.pin_lb.config(fg=self.FG if self.topmost else self.SUB)
+
+        for w in self.body.winfo_children():
+            w.destroy()
+        self.rows = app.store.upcoming(today, 14)       # 처리 안 된 일정 중 14일 이내(지난 것 포함)
+        if not self.rows:
+            tk.Label(self.body, text="임박한 일정이 없습니다 🙂", font=(FONT, 10), fg=self.SUB, bg=self.BG).pack(pady=20)
+            return
+        for ev in self.rows[:30]:
+            n = core.dday(ev["date"], today)
+            b, f = event_colors(ev, today)
+            row = tk.Frame(self.body, bg=b, cursor="hand2")
+            row.pack(fill="x", pady=2)
+            tk.Label(row, text=core.dday_text(n), font=(FONT, 9, "bold"), fg=f, bg=b, width=6).pack(side="left")
+            txt = "%s %s%s" % (ev["date"][5:], (ev["time"] + " ") if ev.get("time") else "", ev["title"])
+            tk.Label(row, text=txt, font=(FONT, 9), fg=f, bg=b, anchor="w", justify="left",
+                     wraplength=max(120, self.win.winfo_width() - 110)).pack(side="left", fill="x", expand=True, padx=2, pady=2)
+            for part in [row] + list(row.winfo_children()):
+                part.bind("<Button-1>", lambda e, ev=ev: self.open_event(ev))
+                for b3 in ("<Button-3>", "<Button-2>"):
+                    part.bind(b3, self.popup)
+
+    def tick(self):
+        """1분마다 새로 그린다 (자정이 지나면 날짜·근무팀이 바뀐다)."""
+        self.refresh()
+        self._job = self.win.after(60000, self.tick)
+
+    def open_event(self, ev):
+        self.show_main()
+        self.app.pending_select_id = ev["id"]
+        self.app.go_to(dt.date.fromisoformat(ev["date"]))
+
+    def show_main(self):
+        self.app.root.deiconify()
+        self.app.root.lift()
+
+    def close(self):
+        if self._job:
+            self.win.after_cancel(self._job)
+        self.save_cfg()
+        self.win.destroy()
+        self.app.widget = None
+        if self.app.widget_only and not self.app.root.winfo_viewable():
+            self.app.root.destroy()                     # 위젯만 켠 상태에서 닫으면 프로그램 종료
+
+
 class App:
-    def __init__(self):
+    def __init__(self, widget_only=False):
         self.root = tk.Tk()
         self.root.title("공문 달력")
         self.root.geometry("1180x740")
@@ -566,6 +737,8 @@ class App:
         self.soon_events = []
         self.status_win = None
         self.ach_win = None
+        self.widget = None
+        self.widget_only = widget_only
         self._click_job = None                          # 단일 클릭/더블 클릭을 구분하기 위한 예약
         self.pending_select_id = None                   # 클릭한 일정을 오른쪽 목록에서 선택해 두기 위함
         self.last_clip = ""
@@ -579,6 +752,9 @@ class App:
         self.build_body()
         self.refresh()
         author_credit.add_author_credit(self.root, app_name="공문 달력")
+        if widget_only:                                 # 위젯만 띄우기: 큰 달력 창은 숨겨 둔다
+            self.root.withdraw()
+            self.open_widget()
 
     # ---- 화면 만들기 -----------------------------------------------------
     def build_top(self):
@@ -593,6 +769,7 @@ class App:
         self.team_label.pack(side="left", padx=10)
 
         ttk.Button(bar, text=".ics 내보내기", command=self.export_ics).pack(side="right")
+        ttk.Button(bar, text="🧩 위젯", command=self.open_widget).pack(side="right", padx=6)
         ttk.Button(bar, text="⚙ 근무 설정", command=self.open_team_settings).pack(side="right", padx=6)
         ttk.Button(bar, text="📋 업무 현황", command=self.open_status).pack(side="right")
         ttk.Button(bar, text="★ 내 실적 정리", command=self.open_achievements).pack(side="right", padx=6)
@@ -658,6 +835,8 @@ class App:
             self.status_win.refresh()
         if self.ach_win is not None:
             self.ach_win.refresh()
+        if self.widget is not None:                     # 위젯도 같이 갱신
+            self.widget.refresh()
 
     def update_team_label(self):
         team = core.team_for(self.today, self.settings)
@@ -897,6 +1076,12 @@ class App:
             return
         self.ach_win = AchievementWindow(self)
 
+    def open_widget(self):
+        if self.widget is not None:
+            self.widget.win.lift()
+            return
+        self.widget = WidgetWindow(self)
+
     def open_status(self):
         if self.status_win is not None:
             self.status_win.win.lift()
@@ -932,4 +1117,4 @@ class App:
 
 
 if __name__ == "__main__":
-    App().run()
+    App(widget_only="--widget" in sys.argv).run()       # python gongmun_calendar.py --widget  : 위젯만 실행
