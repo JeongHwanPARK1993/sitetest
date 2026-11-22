@@ -696,13 +696,14 @@ def safe_filename(name, maxlen=60):
     return name[:maxlen].strip(" .") or "공문"
 
 
-def archive_document(source, text, title, date_iso):
-    """공문 사본을 보관하고 '프로그램 폴더 기준 상대경로'를 돌려준다."""
+def archive_document(source, text, title, date_iso, stem=None):
+    """공문 사본을 보관하고 '프로그램 폴더 기준 상대경로'를 돌려준다.
+    stem 이 있으면 그 이름(확장자 제외)으로 저장하고, 없으면 [날짜_제목] 으로 저장한다."""
     folder = data_path("공문보관")
     os.makedirs(folder, exist_ok=True)
     has_file = bool(source) and os.path.isfile(source)
     ext = (os.path.splitext(source)[1] if has_file else "") or ".txt"
-    base = "%s_%s" % (date_iso, safe_filename(title))
+    base = safe_filename(stem, 150) if stem else "%s_%s" % (date_iso, safe_filename(title))
     dest, n = os.path.join(folder, base + ext), 2
     while os.path.exists(dest):                         # 같은 이름이 있으면 _2, _3 ...
         dest = os.path.join(folder, "%s_%d%s" % (base, n, ext))

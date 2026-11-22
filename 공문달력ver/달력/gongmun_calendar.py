@@ -18,10 +18,12 @@ import os
 import subprocess
 import sys
 import tkinter as tk
+from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
 import author_credit
 import gongmun_core as core
+import gongmun_rename as rn                        # 공문 PDF 에서 제목·시행기관·시행일자를 읽어 파일 이름을 만든다
 
 FONT = "맑은 고딕"
 KINDS = ["기한", "행사", "애매", "기타", "변경전"]
@@ -63,10 +65,11 @@ class AddDialog:
         self.app = app
         self.source = ""                                # 불러온 원본 파일 경로
         self.rows = []                                  # 기한 후보 한 줄 한 줄
+        self.rename_info = None                         # PDF 에서 읽은 제목·시행정보 (rn.DocInfo)
 
         win = self.win = tk.Toplevel(app.root)
         win.title("공문 추가")
-        win.geometry("860x740")
+        win.geometry("860x830")
         win.transient(app.root)
 
         # ① 공문 내용 입력 칸
@@ -109,6 +112,30 @@ class AddDialog:
         self.attach_text.pack(fill="x")
         self.extra = {"emails": [], "requests": []}      # 메일·요청 문장은 화면에 안 보이고 같이 저장만
 
+        # 파일 이름 바꾸기 (공문 제목 바꾸기 기능)
+        rf = ttk.LabelFrame(win, text="파일 이름 - 공문 PDF 의 제목·시행기관·시행일자로 새 이름을 만듭니다", padding=8)
+        rf.pack(fill="x", padx=10, pady=4)
+        s = app.settings
+        self.name_var = tk.StringVar()
+        self.tpl_var = tk.StringVar(value=s.get("rename_template", rn.DEFAULT_TEMPLATE))
+        self.datefmt_var = tk.StringVar(value=s.get("rename_date_fmt", rn.DEFAULT_DATE_FORMAT))
+        self.rename_orig = tk.BooleanVar(value=False)
+        ttk.Label(rf, text="새 이름").grid(row=0, column=0, sticky="w")
+        ttk.Entry(rf, textvariable=self.name_var).grid(row=0, column=1, sticky="we", padx=6, pady=2)
+        ttk.Label(rf, text=".pdf").grid(row=0, column=2, sticky="w")
+        ttk.Button(rf, text="이름 다시 만들기", command=self.make_name).grid(row=0, column=3, padx=(6, 0))
+        ttk.Label(rf, text="형식").grid(row=1, column=0, sticky="w")
+        ttk.Entry(rf, textvariable=self.tpl_var, width=34).grid(row=1, column=1, sticky="w", padx=6, pady=2)
+        ttk.Combobox(rf, textvariable=self.datefmt_var, values=list(rn.DATE_FORMATS), width=12,
+                     state="readonly").grid(row=1, column=3, padx=(6, 0))
+        self.name_note = ttk.Label(rf, text="", foreground="#b45309")
+        self.name_note.grid(row=2, column=1, columnspan=3, sticky="w", padx=6)
+        ttk.Checkbutton(rf, text="불러온 원본 파일 이름도 새 이름으로 바꾸기 (같은 폴더에서 이름만 바뀝니다)",
+                        variable=self.rename_orig).grid(row=3, column=1, columnspan=3, sticky="w", padx=6, pady=(2, 0))
+        ttk.Label(rf, text="형식에 쓸 수 있는 말: {시행일자} {제목} {시행기관} {문서번호}", foreground="#777").grid(
+            row=4, column=1, columnspan=3, sticky="w", padx=6)
+        rf.columnconfigure(1, weight=1)
+
         # ③ 등록
         bottom = ttk.Frame(win)
         bottom.pack(fill="x", padx=10, pady=10)
@@ -137,6 +164,33 @@ class AddDialog:
         self.run_analyze()
         if not self.title_var.get().strip():            # 공문에서 제목을 못 찾으면 파일 이름이라도 사용
             self.title_var.set(os.path.splitext(os.path.basename(path))[0])
+        self.read_rename_info(path)
+
+    # ---- 파일 이름 만들기 -------------------------------------------------
+    def read_rename_info(self, path):
+        """PDF 면 제목·시행기관·시행일자를 읽어 새 파일 이름을 미리 채운다."""
+        self.rename_info = None
+        self.name_var.set("")
+        self.name_note.config(text="")
+        if os.path.splitext(path)[1].lower() != ".pdf":
+            self.name_note.config(text="PDF 가 아니어서 이름은 [날짜_제목] 으로 보관합니다.")
+            return
+        info = rn.analyze(path)
+        if not info.ok:
+            self.name_note.config(text=info.error + " - 이름을 직접 적어 주세요.")
+            return
+        self.rename_info = info
+        if info.title and info.title != self.title_var.get().strip():
+            self.title_var.set(info.title)              # 제목은 시행정보까지 읽는 이 방식이 더 정확하다
+        self.make_name(notes=info.notes)
+
+    def make_name(self, notes=None):
+        if self.rename_info is None:
+            messagebox.showinfo("안내", "PDF 공문을 불러오면 새 이름을 만들 수 있습니다.\n직접 적으셔도 됩니다.", parent=self.win)
+            return
+        info = rn.DocInfo(**{**self.rename_info.__dict__, "title": self.title_var.get().strip() or self.rename_info.title})
+        self.name_var.set(rn.build_name(info, self.tpl_var.get(), self.datefmt_var.get()))
+        self.name_note.config(text=("확인 필요: " + " / ".join(notes)) if notes else "")
 
     # ---- 분석 ----------------------------------------------------------
     def run_analyze(self):
@@ -209,9 +263,25 @@ class AddDialog:
             messagebox.showinfo("안내", "달력에 올릴 날짜를 체크해 주세요.", parent=self.win)
             return
 
-        # 공문 사본을 '공문보관' 폴더에 [날짜_제목] 이름으로 한 번만 저장하고, 모든 일정이 같은 파일을 가리키게 한다
+        stem = rn.safe_name(self.name_var.get().replace(".pdf", "")) or None     # 새 파일 이름 (없으면 [날짜_제목])
+        if stem and self.rename_orig.get() and self.source and os.path.isfile(self.source):
+            folder = os.path.dirname(self.source)       # 원본 파일도 같은 폴더에서 새 이름으로 바꾼다
+            try:
+                target = rn.unique_target(Path(folder), stem, source=Path(self.source))
+                if str(target) != self.source:
+                    os.rename(self.source, target)
+                    self.source = str(target)
+                    for ev in new_events:
+                        ev["source"] = self.source
+            except OSError as e:
+                messagebox.showwarning("이름 바꾸기 실패", "원본 파일 이름을 바꾸지 못했습니다.\n(열려 있는 파일인지 확인해 주세요)\n%s" % e, parent=self.win)
+        self.app.settings["rename_template"] = self.tpl_var.get()
+        self.app.settings["rename_date_fmt"] = self.datefmt_var.get()
+        core.save_settings(self.app.settings)
+
+        # 공문 사본을 '공문보관' 폴더에 새 파일 이름으로 한 번만 저장하고, 모든 일정이 같은 파일을 가리키게 한다
         try:
-            doc_file = core.archive_document(self.source, self.text.get("1.0", "end"), title, new_events[0]["date"])
+            doc_file = core.archive_document(self.source, self.text.get("1.0", "end"), title, new_events[0]["date"], stem=stem)
         except OSError as e:
             doc_file = ""
             messagebox.showwarning("보관 실패", "공문 사본을 보관하지 못했습니다.\n일정만 등록합니다.\n%s" % e, parent=self.win)
