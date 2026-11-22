@@ -35,6 +35,20 @@ def data_path(filename):
     return os.path.join(base, filename)
 
 
+_SHARED_DIR = ""                                        # 팀 공유 폴더 (비어 있으면 프로그램 폴더)
+
+
+def set_shared_dir(path):
+    """일정 파일(공문일정.json)과 공문보관 폴더를 둘 곳을 정한다. 빈 값이면 프로그램 폴더."""
+    global _SHARED_DIR
+    _SHARED_DIR = path if path and os.path.isdir(path) else ""
+    return _SHARED_DIR
+
+
+def shared_path(filename):
+    return os.path.join(_SHARED_DIR, filename) if _SHARED_DIR else data_path(filename)
+
+
 # ──────────────────────────────────────────────────────────────
 # 1. 용어사전 (기본값). 파일이 없으면 이 내용으로 '용어사전.txt'를 만들어 준다
 # ──────────────────────────────────────────────────────────────
@@ -281,7 +295,7 @@ def _make_date(y, m, d):
 # 4. 공문 분석 (이 파일의 핵심 함수)
 # ──────────────────────────────────────────────────────────────
 TITLE_RE = re.compile(r"^\s*제\s*목\s*[:：\-]?\s*(.*)$")
-ATTACH_RE = re.compile(r"^\s*붙\s*임\s*[:：]?\s*(.*)$")
+ATTACH_RE = re.compile(r"^\s*붙\s*임(?!\s*(?:과|와|의|을|에|으로|같이|\d*\s*서식에))\s*[:：]?\s*(.*)$")   # "붙임과 같이 …" 는 붙임 목록이 아님
 EMAIL_RE = re.compile(r"[\w.\-]+@[\w.\-]+\.[A-Za-z]{2,}")
 DOCNO_RE = re.compile(r"[가-힣]{2,15}-\d{1,6}")
 
@@ -352,6 +366,8 @@ def _label_is_close(kind, gap):
     - 일반 용어: 10글자 이내  (예: '제출기한을', '기간:', '○제출기한\n-')
     - 문서날짜 용어(시행/접수): 머리말은 '시행 소방행정과-1234 (' 처럼 문서번호가 끼므로 번호가 있으면 30글자까지"""
     if kind == "문서":
+        if re.match(r"^(하여|하고|하여서|해서|한|하는|하신|하며|하기)", gap):
+            return False                                # '작성하여 11.23.까지' 는 문서 날짜가 아니라 할 일의 기한
         return len(gap) <= 4 or (re.search(r"-\d", gap) is not None and len(gap) <= 30)
     return len(gap) <= 10
 
@@ -472,7 +488,7 @@ def analyze(text, lex=None, today=None):
             break
     return {
         "title": _find_title(lines), "doc_no": doc_no, "doc_date": doc_date,
-        "attachments": _find_attachments(lines), "requests": _find_requests(lines),
+        "attachments": _find_attachments(lines), "requests": _find_requests(lines), "todos": find_todos(text),
         "emails": list(dict.fromkeys(EMAIL_RE.findall(text))), "candidates": candidates,
     }
 
@@ -541,59 +557,146 @@ def read_file_text(path):
 # 6. 일정 저장소 (JSON 파일 한 개)
 # ──────────────────────────────────────────────────────────────
 class Store:
+    """일정 저장소. 여러 사람이 공유 폴더의 같은 파일을 써도 서로 덮어쓰지 않도록
+    저장할 때마다 파일을 다시 읽어 '더 나중에 고친 쪽'을 남기고 합친다.
+    지운 일정은 {"id", "deleted": True} 표시만 남겨서 다른 사람 PC 에서도 지워지게 한다."""
+
     def __init__(self, path):
         self.path = path
         self.events = []
+        self._tomb = {}                                 # 지운 일정 id -> 지운 시각
+        self.mtime = 0
         self.load()
 
-    def load(self):
+    @staticmethod
+    def _now():
+        return dt.datetime.now().isoformat(timespec="seconds")
+
+    def _read_file(self):
         try:
             with open(self.path, "r", encoding="utf-8") as f:
-                self.events = json.load(f)
+                data = json.load(f)
+            return data if isinstance(data, list) else []
         except FileNotFoundError:
-            self.events = []
+            return []
         except (json.JSONDecodeError, OSError):         # 파일이 깨졌으면 백업해 두고 새로 시작
             try:
-                os.replace(self.path, self.path + ".bak")
+                shutil.copy2(self.path, self.path + ".bak")
             except OSError:
                 pass
-            self.events = []
+            return []
+
+    def _split(self, records):
+        live, tomb = {}, {}
+        for r in records:
+            if not isinstance(r, dict) or "id" not in r:
+                continue
+            if r.get("deleted"):
+                tomb[r["id"]] = r.get("updated", "")
+            else:
+                live[r["id"]] = r
+        return live, tomb
+
+    def load(self):
+        live, self._tomb = self._split(self._read_file())
+        self.events = [e for i, e in live.items() if i not in self._tomb]
+        self.mtime = self._file_mtime()
+
+    def _file_mtime(self):
+        try:
+            return os.path.getmtime(self.path)
+        except OSError:
+            return 0
+
+    def changed_on_disk(self):
+        """다른 사람(또는 다른 창)이 파일을 고쳤으면 True"""
+        return self._file_mtime() != self.mtime
+
+    def reload(self):
+        """디스크 내용과 합쳐서 다시 읽는다 (내 쪽에서 고친 것도 유지)."""
+        self._merge_with_disk()
+
+    def _merge_with_disk(self):
+        disk_live, disk_tomb = self._split(self._read_file())
+        mine = {e["id"]: e for e in self.events}
+        tomb = dict(disk_tomb)
+        for i, t in self._tomb.items():
+            if t >= tomb.get(i, ""):
+                tomb[i] = t
+        merged = dict(disk_live)
+        for i, e in mine.items():                       # 같은 일정이면 더 나중에 고친 쪽을 남긴다
+            if i not in merged or e.get("updated", "") >= merged[i].get("updated", ""):
+                merged[i] = e
+        for i, t in tomb.items():                       # 지운 뒤에 다시 고친 게 아니면 지운다
+            if i in merged and merged[i].get("updated", "") <= t:
+                del merged[i]
+        self._tomb = tomb
+        self.events = sorted(merged.values(), key=lambda e: (e.get("date", ""), e.get("time") or ""))
 
     def save(self):
+        self._merge_with_disk()
+        records = list(self.events) + [{"id": i, "deleted": True, "updated": t} for i, t in self._tomb.items()]
         tmp = self.path + ".tmp"                        # 임시 파일에 쓴 뒤 바꿔치기 (저장 중 꺼져도 안전)
         with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(self.events, f, ensure_ascii=False, indent=1)
+            json.dump(records, f, ensure_ascii=False, indent=1)
         os.replace(tmp, self.path)
+        self.mtime = self._file_mtime()
+
+    def get(self, ev_id):
+        for e in self.events:
+            if e["id"] == ev_id:
+                return e
+        return None
+
+    def _edit(self, ev_id, fn):
+        e = self.get(ev_id)
+        if e is not None:
+            fn(e)
+            e["updated"] = self._now()
+        self.save()
 
     def add(self, ev):
         ev.setdefault("id", uuid.uuid4().hex)
         ev.setdefault("done", False)
+        ev["updated"] = self._now()
         self.events.append(ev)
         self.save()
 
     def delete(self, ev_id):
         self.events = [e for e in self.events if e["id"] != ev_id]
+        self._tomb[ev_id] = self._now()
         self.save()
 
     def toggle_done(self, ev_id):
-        for e in self.events:
-            if e["id"] == ev_id:
-                e["done"] = not e.get("done", False)
-                e["done_at"] = dt.date.today().isoformat() if e["done"] else ""   # 완료한 날짜 기록
-        self.save()
+        def fn(e):
+            e["done"] = not e.get("done", False)
+            e["done_at"] = dt.date.today().isoformat() if e["done"] else ""   # 완료한 날짜 기록
+        self._edit(ev_id, fn)
 
     def toggle_mine(self, ev_id):
         """'내 실적'(자기역량기술서에 쓸 업무) 표시를 켜고 끈다"""
-        for e in self.events:
-            if e["id"] == ev_id:
-                e["mine"] = not e.get("mine", False)
-        self.save()
+        self._edit(ev_id, lambda e: e.__setitem__("mine", not e.get("mine", False)))
 
     def set_note(self, ev_id, note):
         """내가 한 역할·성과 메모"""
+        self._edit(ev_id, lambda e: e.__setitem__("note", note))
+
+    def toggle_todo(self, ev_id, idx):
+        """회신 할 일 체크리스트의 한 줄을 했음/안 했음으로 바꾼다.
+        한 공문에서 날짜가 여러 개 올라갔으면(같은 group) 모두 같이 바뀐다."""
+        ev = self.get(ev_id)
+        todos = (ev or {}).get("todos") or []
+        if not (0 <= idx < len(todos)):
+            return
+        new = not todos[idx].get("done")
+        group = ev.get("group")
+        now = self._now()
         for e in self.events:
-            if e["id"] == ev_id:
-                e["note"] = note
+            if e is ev or (group and e.get("group") == group):
+                ts = e.get("todos") or []
+                if idx < len(ts):
+                    ts[idx]["done"] = new
+                    e["updated"] = now
         self.save()
 
     def group_by_date(self):
@@ -704,10 +807,11 @@ def safe_filename(name, maxlen=60):
     return name[:maxlen].strip(" .") or "공문"
 
 
-def archive_document(source, text, title, date_iso, stem=None):
+def archive_document(source, text, title, date_iso, stem=None, month=None):
     """공문 사본을 보관하고 '프로그램 폴더 기준 상대경로'를 돌려준다.
     stem 이 있으면 그 이름(확장자 제외)으로 저장하고, 없으면 [날짜_제목] 으로 저장한다."""
-    folder = data_path("공문보관")
+    month = month or (date_iso or dt.date.today().isoformat())[:7]   # 2026-11 처럼 달마다 폴더를 나눈다
+    folder = shared_path(os.path.join("공문보관", month))
     os.makedirs(folder, exist_ok=True)
     has_file = bool(source) and os.path.isfile(source)
     ext = (os.path.splitext(source)[1] if has_file else "") or ".txt"
@@ -721,7 +825,7 @@ def archive_document(source, text, title, date_iso, stem=None):
     else:                                               # 붙여넣기로 넣은 공문은 글자 파일로 보관
         with open(dest, "w", encoding="utf-8") as f:
             f.write(text)
-    return os.path.join("공문보관", os.path.basename(dest))
+    return os.path.join("공문보관", month, os.path.basename(dest))
 
 
 def resolve_doc_path(ev):
@@ -729,9 +833,10 @@ def resolve_doc_path(ev):
     for key in ("file", "source"):
         v = ev.get(key)
         if v:
-            p = v if os.path.isabs(v) else data_path(v)
-            if os.path.isfile(p):
-                return p
+            cands = [v] if os.path.isabs(v) else [shared_path(v), data_path(v)]
+            for p in cands:
+                if os.path.isfile(p):
+                    return p
     return None
 
 
@@ -781,3 +886,132 @@ def achievement_text(events, title=""):
         if e.get("note"):
             out.append("   - " + e["note"].replace("\n", "\n     "))
     return "\n".join(out)
+
+
+# ──────────────────────────────────────────────────────────────
+# 11. 관련 공문 묶기 ("○○과-1234호와 관련입니다" -> 같은 건끼리 연결)
+# ──────────────────────────────────────────────────────────────
+_REF_RE = re.compile(r"[가-힣][가-힣0-9]{1,14}-\d{1,6}")    # 감사2담당관-1407 처럼 숫자가 낀 부서명도
+
+
+def find_doc_refs(text, own_no=""):
+    """본문에 나오는 다른 공문의 문서번호들. 이 공문 자신의 번호(시행 ...)와 접수번호는 뺀다."""
+    flat = re.sub(r"\s+", " ", text or "")
+    res = []
+    for m in _REF_RE.finditer(flat):
+        no = m.group(0)
+        before = flat[max(0, m.start() - 4):m.start()]
+        if no == own_no or "시행" in before or "접수" in before or no in res:
+            continue
+        res.append(no)
+    return res[:10]
+
+
+_TODO_WORDS = ("제출", "회신", "보고", "송부", "신청", "참석", "작성", "추천", "통보", "첨부", "입실", "안내", "협조", "참여", "등록")
+_TODO_START = re.compile(r"(?:다\.|하오니,?|하니,?|드리니,?|바랍니다\.|아울러,?|※|\s\d{1,2}\.|\s[가-하]\.)\s")
+
+
+def find_todos(text, limit=5):
+    """'~제출하여 주시기 바랍니다.' 같은 요청 문장을 '회신 할 일' 로 뽑는다.
+    PDF 에서 줄이 꺾여도 문장 전체를 잇고, '~하오니' 앞의 설명은 떼어 낸다."""
+    flat = re.sub(r"\s+", " ", text or "")
+    out = []
+    for m in re.finditer(r"(?:주시기|하시기)\s?바랍니다\.?|바람\.", flat):
+        chunk = flat[max(0, m.start() - 220):m.end()]
+        starts = [x.end() for x in _TODO_START.finditer(chunk[:-len(m.group(0))])]
+        sent = chunk[starts[-1]:] if starts else chunk
+        if len(sent) < 25 and len(starts) > 1:          # '협조하여 주시기 바랍니다.' 처럼 너무 짧으면 앞 구절까지
+            sent = chunk[starts[-2]:]
+        sent = re.sub(r"^(?:\d{1,2}\.|[가-하]\.|아울러,?)\s*", "", sent.strip())
+        if len(sent) > 150:
+            sent = "…" + sent[-149:]
+        if any(w in _strip_ws(sent) for w in _TODO_WORDS) and sent not in out:
+            out.append(sent)
+        if len(out) >= limit:
+            break
+    return out
+
+
+def related_events(events, ev):
+    """ev 와 문서번호로 이어진 다른 공문 일정들 (같은 공문의 다른 날짜는 뺀다)"""
+    my_no = ev.get("doc_no", "")
+    my_refs = set(ev.get("refs") or [])
+    out, seen = [], set()
+    for e in events:
+        if e["id"] == ev["id"] or (my_no and e.get("doc_no") == my_no) or (e.get("group") and e.get("group") == ev.get("group")):
+            continue
+        linked = (e.get("doc_no") and e["doc_no"] in my_refs) or (my_no and my_no in (e.get("refs") or [])) \
+            or bool(my_refs & set(e.get("refs") or []))
+        key = e.get("group") or e["id"]
+        if linked and key not in seen:
+            seen.add(key)
+            out.append(e)
+    return out
+
+
+# ──────────────────────────────────────────────────────────────
+# 12. 기한 알림 (D-3, D-1, 당일, 지남 - 단계마다 한 번씩)
+# ──────────────────────────────────────────────────────────────
+ALERT_LEVELS = [(3, "D-3"), (1, "D-1"), (0, "D-day")]
+
+
+def due_alerts(events, today, levels=(3, 1, 0), alerted=None):
+    """지금 띄워야 할 알림 [(일정, 단계이름)].  alerted = {일정id: [이미 띄운 단계]} (내 PC 설정에 저장)"""
+    alerted = alerted or {}
+    out = []
+    for e in events:
+        if e.get("done") or e.get("kind") == "변경전":
+            continue
+        n = dday(e["date"], today)
+        done = alerted.get(e["id"]) or []
+        for lv, name in ALERT_LEVELS:
+            if lv in levels and n == lv and name not in done:
+                out.append((e, name))
+        if n < 0 and "지남" not in done and n >= -7:
+            out.append((e, "지남"))
+    return out
+
+
+# ──────────────────────────────────────────────────────────────
+# 13. 검색 (제목·문서번호·기관·메모·붙임)
+# ──────────────────────────────────────────────────────────────
+def search_events(events, query):
+    words = [w for w in re.split(r"\s+", (query or "").strip()) if w]
+    if not words:
+        return []
+    out = []
+    for e in events:
+        hay = _strip_ws(" ".join([e.get("title", ""), e.get("doc_no", ""), e.get("org", ""), e.get("note", ""),
+                                   e.get("snippet", ""), " ".join(e.get("attachments") or []),
+                                   " ".join(e.get("refs") or []), e.get("date", "")]))
+        if all(_strip_ws(w) in hay for w in words):
+            out.append(e)
+    return sorted(out, key=lambda e: e["date"], reverse=True)
+
+
+# ──────────────────────────────────────────────────────────────
+# 14. 처리 현황 엑셀(.xlsx) - 추가 설치 없이 만든다
+# ──────────────────────────────────────────────────────────────
+def export_xlsx(events, path, today=None):
+    import gongmun_xlsx
+    today = today or dt.date.today()
+    headers = ["상태", "D-day", "구분", "날짜", "시간", "공문 제목", "문서번호", "시행기관", "완료일", "할 일", "붙임", "내 메모"]
+    rows, styles = [], []
+    for e in sorted(events, key=lambda e: (e["date"], e.get("time") or "")):
+        n = dday(e["date"], today)
+        todos = e.get("todos") or []
+        if e.get("done"):
+            state, st = "완료", "done"
+        elif n < 0:
+            state, st = "기한초과", "late"
+        elif n <= 3:
+            state, st = "임박", "soon"
+        else:
+            state, st = "미처리", ""
+        rows.append([state, "" if e.get("done") else dday_text(n), e.get("kind", ""), e["date"], e.get("time", ""),
+                     e.get("title", ""), e.get("doc_no", ""), e.get("org", ""), e.get("done_at", ""),
+                     ("%d/%d" % (sum(1 for t in todos if t.get("done")), len(todos))) if todos else "",
+                     " / ".join(e.get("attachments") or []), e.get("note", "")])
+        styles.append(st)
+    gongmun_xlsx.write_xlsx(path, "업무처리현황", headers, rows, styles,
+                            widths=[10, 8, 8, 12, 7, 60, 18, 16, 12, 8, 40, 30])
