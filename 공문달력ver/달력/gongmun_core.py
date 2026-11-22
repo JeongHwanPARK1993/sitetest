@@ -458,6 +458,10 @@ def analyze(text, lex=None, today=None):
         for cd in candidates:                           # 기한이 하나도 없으면 '애매'를 미리 체크
             if cd["kind"] == "애매":
                 cd["checked"] = True
+    if candidates and not any(cd["checked"] for cd in candidates):
+        for cd in candidates:                           # 기한·애매도 없으면 '행사'(참석 일시 등)를 미리 체크
+            if cd["kind"] == "행사":
+                cd["checked"] = True
 
     # (5) 나머지 항목
     doc_no = ""
@@ -485,8 +489,12 @@ def read_pdf_text(path):
             import pdfplumber
             with pdfplumber.open(path) as pdf:
                 text = "\n".join((p.extract_text() or "") for p in pdf.pages)
-        except ImportError:
-            raise RuntimeError("PDF를 읽으려면 pypdf 설치가 필요합니다.\n명령창에서:  pip install pypdf")
+        except ImportError:                             # 설치된 게 없으면 내장 PDF 리더(gongmun_pdf)로 읽는다
+            try:
+                import gongmun_pdf
+                text = "\n".join(gongmun_pdf.read_pdf_text(path))
+            except Exception as e:
+                raise RuntimeError("PDF를 읽지 못했습니다: %s\n(pypdf 를 설치하면 더 잘 읽힙니다:  pip install pypdf)" % e)
     if not text.strip():
         raise RuntimeError("PDF에서 글자를 읽지 못했습니다. (스캔한 그림 PDF일 수 있습니다)")
     return text
