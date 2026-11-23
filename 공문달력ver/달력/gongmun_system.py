@@ -195,3 +195,63 @@ class FolderWatcher:
             elif not old or old[0] != size:
                 self.pending[p] = (size, now)
         return ready
+
+
+# ──────────────────────────────────────────────────────────────
+# 4. 바탕화면에 깔린 창 (달력 위젯)
+#    다른 창들 '아래'에 두고, 바탕화면 보기(Win+D)를 눌러도 사라지지 않게 바탕화면(Progman)에 붙인다.
+# ──────────────────────────────────────────────────────────────
+def _hwnd(win):
+    import ctypes
+    win.update_idletasks()
+    return ctypes.windll.user32.GetParent(win.winfo_id()) or win.winfo_id()
+
+
+def pin_to_desktop(win):
+    """창을 바탕화면 층에 붙인다. 성공하면 True"""
+    if not IS_WIN:
+        return False
+    try:
+        import ctypes
+        from ctypes import wintypes
+        user32 = ctypes.windll.user32
+        user32.FindWindowW.restype = wintypes.HWND
+        user32.SetWindowLongPtrW.argtypes = [wintypes.HWND, ctypes.c_int, ctypes.c_void_p]
+        user32.SetWindowLongPtrW.restype = ctypes.c_void_p
+        hwnd = _hwnd(win)
+        progman = user32.FindWindowW("Progman", None)
+        if progman:
+            user32.SetWindowLongPtrW(hwnd, -8, progman)  # GWLP_HWNDPARENT: 주인을 바탕화면으로
+        send_to_bottom(win)
+        return True
+    except Exception:
+        return False
+
+
+def unpin_from_desktop(win):
+    if not IS_WIN:
+        return
+    try:
+        import ctypes
+        from ctypes import wintypes
+        user32 = ctypes.windll.user32
+        user32.SetWindowLongPtrW.argtypes = [wintypes.HWND, ctypes.c_int, ctypes.c_void_p]
+        user32.SetWindowLongPtrW(_hwnd(win), -8, None)
+    except Exception:
+        pass
+
+
+def send_to_bottom(win):
+    """창을 맨 아래(다른 창들 뒤)로 보낸다"""
+    if not IS_WIN:
+        try:
+            win.lower()
+        except Exception:
+            pass
+        return
+    try:
+        import ctypes
+        HWND_BOTTOM, SWP_NOSIZE, SWP_NOMOVE, SWP_NOACTIVATE = 1, 0x0001, 0x0002, 0x0010
+        ctypes.windll.user32.SetWindowPos(_hwnd(win), HWND_BOTTOM, 0, 0, 0, 0, SWP_NOSIZE | SWP_NOMOVE | SWP_NOACTIVATE)
+    except Exception:
+        pass

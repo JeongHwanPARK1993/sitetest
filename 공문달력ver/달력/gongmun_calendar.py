@@ -7,7 +7,8 @@ gongmun_calendar.py  -  공문 달력 (화면 부분)
 
 화면 구성
   [머리줄]    월 이동 · 오늘 근무팀 · 검색칸
-  [도구줄]    ＋공문 추가 · 여러 개 한꺼번에 | 업무 현황 · 내 실적 · 검색 | 위젯 · 내보내기 · 설정
+  [도구줄]    ＋공문 추가 · 여러 개 한꺼번에 | 업무 현황 · 내 실적 | 위젯 · 내보내기 · 설정
+  [위젯]      바탕화면 달력 위젯(음력·절기·공휴일) / 목록 위젯(오늘 근무·임박 기한) - 골라서 사용
   [왼쪽]      월간 달력 (칸마다 근무팀, 일정을 누르면 선택 / 더블클릭하면 공문 열기)
   [오른쪽]    선택한 날: 일정 · 상세 · 회신 할 일 · 관련 공문  /  임박한 기한
   [아래 줄]   저장 위치 · 다운로드 감시 · 복사 분석 · 알림 상태 (누르면 설정이 열린다)
@@ -21,13 +22,15 @@ import os
 import subprocess
 import sys
 import tkinter as tk
+import tkinter.font as tkfont
 import uuid
 from tkinter import filedialog, messagebox, ttk
 
 import author_credit
 import gongmun_core as core
 import gongmun_rename as rn                        # 공문 PDF 에서 제목·시행기관·시행일자를 읽어 파일 이름을 만든다
-import gongmun_system as gs                        # 파일 끌어놓기 · 윈도우 시작 시 실행 · 폴더 감시
+import gongmun_kcal as kcal                        # 음력 · 24절기 · 공휴일
+import gongmun_system as gs                        # 파일 끌어놓기 · 윈도우 시작 시 실행 · 폴더 감시 · 바탕화면 고정
 
 FONT = "맑은 고딕"
 KINDS = ["기한", "행사", "애매", "기타", "변경전"]
@@ -173,7 +176,7 @@ def make_event(date_iso, time_text, kind, snippet, common):
 #   ① 공문 내용(붙여넣기/불러오기/끌어놓기) → ② 공문 정보·파일 이름 → ③ 날짜 → ④ 붙임·할 일 → 등록
 # ══════════════════════════════════════════════════════════════
 class AddDialog:
-    def __init__(self, app, prefill="", path=None):
+    def __init__(self, app, path=None):
         self.app = app
         self.source = ""                                # 불러온 원본 파일 경로
         self.rows = []                                  # 날짜 후보 한 줄 한 줄
@@ -272,9 +275,6 @@ class AddDialog:
 
         if not gs.enable_file_drop(win, self.on_drop):
             self.hint.config(text="📂 [파일 불러오기]로 공문 PDF/HWPX 를 여세요.  공문 내용을 복사해서 붙여넣어도 됩니다.")
-        if prefill:
-            self.text.insert("1.0", prefill)
-            self.run_analyze()
         if path:
             win.after(50, lambda: self.load_file(path))
 
@@ -647,7 +647,7 @@ class BatchDialog:
 #  설정 창 (근무팀 · 알림 · 자동화 · 공유 폴더 · 파일 이름)
 # ══════════════════════════════════════════════════════════════
 class SettingsDialog:
-    TABS = ["team", "alert", "auto", "share", "name"]
+    TABS = ["team", "alert", "auto", "widget", "share", "name"]
 
     def __init__(self, app, tab="team"):
         self.app = app
@@ -715,15 +715,49 @@ class SettingsDialog:
         ttk.Label(p, text="감시할 폴더").grid(row=2, column=0, sticky="w", padx=(22, 4))
         ttk.Entry(p, textvariable=self.dl_dir, width=46).grid(row=2, column=1, sticky="w")
         ttk.Button(p, text="찾아보기", command=lambda: self.browse(self.dl_dir)).grid(row=2, column=2, padx=6)
-        self.clip_on = tk.BooleanVar(value=st.get("clip_watch", False))
-        ttk.Checkbutton(p, text="📋 공문 내용을 복사(Ctrl+C)하면 자동으로 분석해서 '공문 추가' 창 띄우기",
-                        variable=self.clip_on).grid(row=3, column=0, columnspan=3, sticky="w", pady=(14, 2))
         self.auto_on = tk.BooleanVar(value=gs.autostart_enabled())
-        cb = ttk.Checkbutton(p, text="🖥 윈도우를 켜면 바탕화면 위젯 자동으로 띄우기", variable=self.auto_on)
+        cb = ttk.Checkbutton(p, text="🖥 윈도우를 켜면 고른 위젯(위젯 탭) 자동으로 띄우기", variable=self.auto_on)
         cb.grid(row=4, column=0, columnspan=3, sticky="w", pady=(14, 2))
         if not gs.autostart_supported():
             cb.state(["disabled"])
             ttk.Label(p, text="(윈도우에서만 쓸 수 있어요)", style="Sub.TLabel").grid(row=5, column=0, columnspan=3, sticky="w", padx=22)
+
+        # ---- 위젯
+        p = page(" 🧩 위젯 ")
+        ttk.Label(p, text="쓸 위젯을 고르세요 (둘 다 써도 돼요)", style="Head.TLabel").grid(row=0, column=0, columnspan=3, sticky="w")
+        wsel = st.get("widgets", {"desk": True, "list": False})
+        self.w_desk = tk.BooleanVar(value=wsel.get("desk", True))
+        self.w_list = tk.BooleanVar(value=wsel.get("list", False))
+        ttk.Checkbutton(p, text="📅 달력 위젯 - 바탕화면에 깔리는 큰 월간 달력 (음력 · 절기 · 공휴일 · 일정)",
+                        variable=self.w_desk).grid(row=1, column=0, columnspan=3, sticky="w", pady=(12, 2))
+        ttk.Checkbutton(p, text="📋 목록 위젯 - 오늘 근무팀과 임박한 기한만 보여 주는 작은 창",
+                        variable=self.w_list).grid(row=2, column=0, columnspan=3, sticky="w", pady=2)
+        dc = st.get("desk_cal", {})
+        ttk.Label(p, text="달력 위젯 위치", font=(FONT, 10, "bold")).grid(row=3, column=0, sticky="w", pady=(16, 2))
+        self.dc_mode = tk.StringVar(value=dc.get("mode", "desktop"))
+        row = ttk.Frame(p)
+        row.grid(row=4, column=0, columnspan=3, sticky="w", padx=20)
+        for key, label in (("desktop", "바탕화면에 깔기 (다른 창 아래, 바탕화면 보기에도 보임)"), ("normal", "일반 창"), ("top", "항상 위")):
+            ttk.Radiobutton(row, text=label, value=key, variable=self.dc_mode).pack(side="left", padx=(0, 12))
+        ttk.Label(p, text="달력 위젯 모양", font=(FONT, 10, "bold")).grid(row=5, column=0, sticky="w", pady=(12, 2))
+        row = ttk.Frame(p)
+        row.grid(row=6, column=0, columnspan=3, sticky="w", padx=20)
+        self.dc_theme = tk.StringVar(value="밝게" if dc.get("theme") == "light" else "어둡게")
+        ttk.Label(row, text="테마").pack(side="left")
+        ttk.Combobox(row, textvariable=self.dc_theme, values=["어둡게", "밝게"], width=6, state="readonly").pack(side="left", padx=(4, 14))
+        self.dc_alpha = tk.StringVar(value="%d%%" % round(float(dc.get("alpha", 0.9)) * 100))
+        ttk.Label(row, text="불투명도").pack(side="left")
+        ttk.Combobox(row, textvariable=self.dc_alpha, values=["100%", "90%", "80%", "70%", "60%"], width=6,
+                     state="readonly").pack(side="left", padx=(4, 14))
+        self.dc_lunar = tk.BooleanVar(value=dc.get("lunar", True))
+        self.dc_week = tk.BooleanVar(value=dc.get("weeknum", True))
+        ttk.Checkbutton(row, text="음력 표시", variable=self.dc_lunar).pack(side="left", padx=(0, 10))
+        ttk.Checkbutton(row, text="주 번호 표시", variable=self.dc_week).pack(side="left")
+        ttk.Label(p, style="Sub.TLabel", justify="left", text=(
+            "· 위쪽 줄을 끌면 이동, 오른쪽 아래 ◢ 를 끌면 크기 조절, 마우스 휠로 달을 넘깁니다.\n"
+            "· 일정 더블클릭 = 공문 열기 / 날짜 더블클릭 = 큰 달력에서 보기 / 우클릭 = 메뉴\n"
+            "· 공휴일·대체공휴일·24절기·음력은 프로그램이 직접 계산합니다 (인터넷 필요 없음).")).grid(
+            row=7, column=0, columnspan=3, sticky="w", pady=(14, 0))
 
         # ---- 공유 폴더
         p = page(" 📁 공유 폴더 ")
@@ -806,12 +840,20 @@ class SettingsDialog:
             "anchor_date": anchor.isoformat(), "pattern": pattern, "my_team": int(my[0]) if my[:1].isdigit() else 0,
             "alerts_on": self.alert_on.get(), "alert_levels": [lv for lv, v in self.lv_vars.items() if v.get()],
             "widget_flash": self.flash_var.get(),
-            "watch_downloads": self.dl_on.get(), "download_dir": dl, "clip_watch": self.clip_on.get(),
+            "watch_downloads": self.dl_on.get(), "download_dir": dl,
+            "widgets": {"desk": self.w_desk.get(), "list": self.w_list.get()},
             "shared_dir": share, "rename_template": self.tpl_var.get(), "rename_date_fmt": self.datefmt_var.get(),
         })
+        st.pop("clip_watch", None)
+        dc = st.setdefault("desk_cal", {})
+        old_dc = dict(dc)
+        dc.update({"mode": self.dc_mode.get(), "theme": "light" if self.dc_theme.get() == "밝게" else "dark",
+                   "alpha": int(self.dc_alpha.get().rstrip("%")) / 100, "lunar": self.dc_lunar.get(),
+                   "weeknum": self.dc_week.get()})
         core.save_settings(st)
         self.win.destroy()
-        self.app.apply_settings(share_changed=os.path.normcase(old_share) != os.path.normcase(share))
+        self.app.apply_settings(share_changed=os.path.normcase(old_share) != os.path.normcase(share),
+                                desk_changed=old_dc != dc)
 
 
 # ══════════════════════════════════════════════════════════════
@@ -1003,7 +1045,6 @@ class StatusWindow:
         ttk.Button(bar, text="📄 공문 열기", command=self.open_doc).pack(side="left", padx=6)
         ttk.Button(bar, text="📅 달력에서 보기", command=self.goto).pack(side="left")
         ttk.Button(bar, text="📊 엑셀로 저장", command=lambda: app.export_xlsx(parent=self.win)).pack(side="right")
-        ttk.Button(bar, text="CSV", command=self.export).pack(side="right", padx=6)
         ttk.Label(bar, text="(더블클릭 = 공문 열기 · 우클릭 = 메뉴)", style="Sub.TLabel").pack(side="right", padx=10)
         self.refresh()
 
@@ -1076,12 +1117,6 @@ class StatusWindow:
         if ev:
             self.app.show_event(ev)
 
-    def export(self):
-        path = filedialog.asksaveasfilename(parent=self.win, defaultextension=".csv", initialfile="업무처리현황.csv",
-                                            filetypes=[("CSV 파일", "*.csv")])
-        if path:
-            core.export_csv(self.app.store.events, path)
-            messagebox.showinfo("완료", "저장했습니다.\n엑셀에서 열 수 있습니다.", parent=self.win)
 
 
 # ══════════════════════════════════════════════════════════════
@@ -1395,14 +1430,12 @@ class WidgetWindow:
         self.app.root.deiconify()
         self.app.root.lift()
 
-    def close(self):
+    def close(self, quit_if_alone=True):
         if self._job:
             self.win.after_cancel(self._job)
         self.save_cfg()
         self.win.destroy()
-        self.app.widget = None
-        if not self.app.root.winfo_viewable():
-            self.app.root.destroy()                     # 큰 창이 숨겨진 상태에서 위젯을 닫으면 프로그램 종료
+        self.app.widget_closed("list", quit_if_alone)
 
     def flash(self, times=8):
         """기한 알림이 오면 머리줄을 몇 번 깜빡인다"""
@@ -1413,6 +1446,394 @@ class WidgetWindow:
             w.config(bg=color)
         if times > 0:
             self.win.after(450, lambda: self.flash(times - 1))
+
+
+# ══════════════════════════════════════════════════════════════
+#  바탕화면 달력 위젯 (바탕화면에 깔린 큰 월간 달력: 음력 · 절기 · 공휴일 · 주 번호 · 일정)
+#    - 위쪽 줄을 끌면 이동, 오른쪽 아래 ◢ 를 끌면 크기 조절, 마우스 휠 = 달 넘기기
+#    - 일정 더블클릭 = 공문 열기 / 빈 곳 더블클릭 = 그날 큰 달력 / 우클릭 = 메뉴
+#    - '바탕화면에 깔기' 모드: 다른 창들 아래에 있고, 바탕화면 보기(Win+D)를 눌러도 남는다
+# ══════════════════════════════════════════════════════════════
+class DeskCalendar:
+    THEMES = {
+        "dark": dict(bg="#0b151a", bar="#10232b", head="#1a3540", cell="#163039", weekend="#35271f",
+                     other="#0e1f25", fg="#e9eff1", sub="#93a8b1", sun="#ff8a80", sat="#8fbcff", hol="#ff8a80",
+                     term="#6fd69a", today="#f3e7a2", sel="#5b8def", ev="#dfe8ec", done="#6f8088",
+                     late="#ff9a8a", soon="#ffd27a", btn="#9fb3bc", btn_hover="#ffffff"),
+        "light": dict(bg="#dfe4ea", bar="#ffffff", head="#eef2f7", cell="#ffffff", weekend="#fff3ec",
+                      other="#f4f5f7", fg="#1f2430", sub="#7b8390", sun="#d0383b", sat="#2f6fed", hol="#d0383b",
+                      term="#2e9d5b", today="#2f6fed", sel="#8fb3ff", ev="#1f2430", done="#a3a9b2",
+                      late="#c0392b", soon="#b36b00", btn="#7b8390", btn_hover="#1f2430"),
+    }
+    DAYS = ["일요일", "월요일", "화요일", "수요일", "목요일", "금요일", "토요일"]
+
+    def __init__(self, app):
+        self.app = app
+        self.cfg = app.settings.setdefault("desk_cal", {})
+        self.th = self.THEMES.get(self.cfg.get("theme", "dark"), self.THEMES["dark"])
+        today = dt.date.today()
+        self.year, self.month, self.sel = today.year, today.month, None
+        self._fonts, self._job, self._drag, self._day = {}, None, (0, 0), today
+
+        win = self.win = tk.Toplevel(app.root)
+        win.overrideredirect(True)
+        win.configure(bg=self.th["bg"])
+        sw, sh = win.winfo_screenwidth(), win.winfo_screenheight()
+        w = min(int(self.cfg.get("w", 940)), sw)
+        h = min(int(self.cfg.get("h", 660)), sh)
+        x = min(max(int(self.cfg.get("x", 40)), -w + 80), sw - 80)
+        y = min(max(int(self.cfg.get("y", 60)), 0), sh - 60)
+        win.geometry("%dx%d+%d+%d" % (w, h, x, y))
+        self.alpha = float(self.cfg.get("alpha", 0.9))
+
+        th = self.th
+        bar = self.bar = tk.Frame(win, bg=th["bar"])
+        bar.pack(fill="x")
+        self._btn(bar, "◀", lambda: self.move(-1)).pack(side="left", padx=(8, 0))
+        self.title_lb = tk.Label(bar, font=(FONT, 13, "bold"), fg=th["fg"], bg=th["bar"])
+        self.title_lb.pack(side="left", padx=4, pady=4)
+        self._btn(bar, "▶", lambda: self.move(1)).pack(side="left")
+        self.today_lb = tk.Label(bar, font=(FONT, 10), fg=th["sub"], bg=th["bar"])
+        self.today_lb.pack(side="left", padx=12)
+        for text, cmd, tip in (("✕", self.close, "닫기"), ("⚙", self.menu_at_button, "메뉴"),
+                               ("▣", app.show_main, "큰 달력"), ("＋", lambda: app.open_add_dialog(), "공문 추가"),
+                               ("◐", self.cycle_alpha, "투명도")):
+            self._btn(bar, text, cmd).pack(side="right", padx=2)
+        for wdg in (bar, self.title_lb, self.today_lb):
+            wdg.bind("<Button-1>", self.start_move)
+            wdg.bind("<B1-Motion>", self.do_move)
+            wdg.bind("<ButtonRelease-1>", self.end_move)
+            wdg.bind("<Double-1>", lambda e: self.go_today())
+
+        self.hover = tk.Label(win, text="", font=(FONT, 9), fg=th["sub"], bg=th["bg"], anchor="w", padx=8)
+        self.hover.pack(side="bottom", fill="x")
+        self.cv = tk.Canvas(win, bg=th["bg"], highlightthickness=0)
+        self.cv.pack(fill="both", expand=True)
+        grip = tk.Label(win, text="◢", font=(FONT, 9), fg=th["sub"], bg=th["bg"], cursor="sizing")
+        grip.place(relx=1.0, rely=1.0, anchor="se")
+        grip.bind("<Button-1>", self.start_resize)
+        grip.bind("<B1-Motion>", self.do_resize)
+        grip.bind("<ButtonRelease-1>", self.end_move)
+
+        cv = self.cv
+        cv.bind("<Configure>", lambda e: self.schedule_redraw())
+        cv.bind("<Motion>", self.on_motion)
+        cv.bind("<Leave>", lambda e: self.hover.config(text=""))
+        cv.bind("<Button-1>", self.on_click)
+        cv.bind("<Double-1>", self.on_double)
+        for b3 in ("<Button-3>", "<Button-2>"):
+            cv.bind(b3, self.on_right)
+        cv.bind("<MouseWheel>", lambda e: self.move(-1 if e.delta > 0 else 1))
+        cv.bind("<Button-4>", lambda e: self.move(-1))
+        cv.bind("<Button-5>", lambda e: self.move(1))
+
+        self.menu = tk.Menu(win, tearoff=0)
+        self.apply_mode()
+        self.redraw()
+        self._job = win.after(60000, self.tick)
+
+    # ---- 작은 글자 버튼 --------------------------------------------------
+    def _btn(self, parent, text, cmd):
+        th = self.th
+        lb = tk.Label(parent, text=text, font=(FONT, 11), fg=th["btn"], bg=th["bar"], cursor="hand2", padx=5)
+        lb.bind("<Button-1>", lambda e: cmd())
+        lb.bind("<Enter>", lambda e: lb.config(fg=th["btn_hover"]))
+        lb.bind("<Leave>", lambda e: lb.config(fg=th["btn"]))
+        return lb
+
+    # ---- 창 모드 (바탕화면에 깔기 / 일반 / 항상 위) ------------------------------
+    def apply_mode(self):
+        mode = self.cfg.get("mode", "desktop")
+        try:
+            self.win.attributes("-alpha", self.alpha)
+            self.win.attributes("-topmost", mode == "top")
+        except tk.TclError:
+            pass
+        if mode == "desktop":
+            self.pinned = gs.pin_to_desktop(self.win)
+            for ev in ("<FocusIn>", "<ButtonRelease-1>"):
+                self.win.bind(ev, lambda e: self.win.after(30, self.to_bottom), add="+")
+        else:
+            self.pinned = False
+            gs.unpin_from_desktop(self.win)
+
+    def to_bottom(self):
+        if self.cfg.get("mode", "desktop") == "desktop" and self.win.winfo_exists():
+            gs.send_to_bottom(self.win)
+
+    def cycle_alpha(self):
+        steps = [1.0, 0.9, 0.8, 0.7, 0.6]
+        nxt = [a for a in steps if a < self.alpha - 0.01]
+        self.alpha = nxt[0] if nxt else steps[0]
+        self.apply_mode()
+        self.save_cfg()
+
+    def save_cfg(self):
+        self.cfg.update({"x": self.win.winfo_x(), "y": self.win.winfo_y(), "w": self.win.winfo_width(),
+                         "h": self.win.winfo_height(), "alpha": round(self.alpha, 2)})
+        core.save_settings(self.app.settings)
+
+    # ---- 이동·크기 ------------------------------------------------------------
+    def start_move(self, e):
+        self._drag = (e.x_root - self.win.winfo_x(), e.y_root - self.win.winfo_y())
+
+    def do_move(self, e):
+        self.win.geometry("+%d+%d" % (e.x_root - self._drag[0], e.y_root - self._drag[1]))
+
+    def start_resize(self, e):
+        self._drag = (e.x_root, e.y_root, self.win.winfo_width(), self.win.winfo_height())
+
+    def do_resize(self, e):
+        w = max(480, self._drag[2] + e.x_root - self._drag[0])
+        h = max(340, self._drag[3] + e.y_root - self._drag[1])
+        self.win.geometry("%dx%d" % (w, h))
+
+    def end_move(self, _e=None):
+        self.save_cfg()
+        self.to_bottom()
+
+    # ---- 달 이동 --------------------------------------------------------------
+    def move(self, delta):
+        m = self.month + delta
+        self.year += (m - 1) // 12
+        self.month = (m - 1) % 12 + 1
+        self.redraw()
+
+    def go_today(self):
+        t = dt.date.today()
+        self.year, self.month = t.year, t.month
+        self.redraw()
+
+    def tick(self):
+        """1분마다: 날짜가 바뀌었으면 다시 그린다"""
+        if dt.date.today() != self._day:
+            self._day = dt.date.today()
+            self.redraw()
+        self._job = self.win.after(60000, self.tick)
+
+    def refresh(self):
+        self.redraw()
+
+    def schedule_redraw(self):
+        if getattr(self, "_redraw_job", None):
+            self.win.after_cancel(self._redraw_job)
+        self._redraw_job = self.win.after(60, self.redraw)
+
+    # ---- 그리기 ---------------------------------------------------------------
+    def font(self, size, bold=False, strike=False):
+        key = (size, bold, strike)
+        if key not in self._fonts:
+            self._fonts[key] = tkfont.Font(family=FONT, size=size, weight="bold" if bold else "normal",
+                                           overstrike=1 if strike else 0)
+        return self._fonts[key]
+
+    @staticmethod
+    def elide(text, font, maxw):
+        """칸 너비에 맞게 글자를 자르고 … 를 붙인다"""
+        if font.measure(text) <= maxw:
+            return text
+        lo, hi = 0, len(text)
+        while lo < hi:
+            mid = (lo + hi + 1) // 2
+            if font.measure(text[:mid] + "…") <= maxw:
+                lo = mid
+            else:
+                hi = mid - 1
+        return text[:lo] + "…"
+
+    def redraw(self):
+        self._redraw_job = None
+        if not self.win.winfo_exists():
+            return
+        cv, th, cfg = self.cv, self.th, self.cfg
+        W, H = cv.winfo_width(), cv.winfo_height()
+        if W < 100 or H < 100:
+            return
+        cv.delete("all")
+        today = dt.date.today()
+        s = self.app.settings
+        y, m = self.year, self.month
+        self.title_lb.config(text="%d년 %d월" % (y, m))
+        team = core.team_for(today, s)
+        lun = kcal.day_info(today)["lunar"]
+        self.today_lb.config(text="오늘 %d월 %d일 (%s)%s%s" % (
+            today.month, today.day, "월화수목금토일"[today.weekday()], ("  · 음력 " + lun) if lun else "",
+            ("  · 근무 %d팀" % team) if team else ""))
+
+        weeks = calendar.Calendar(firstweekday=6).monthdatescalendar(y, m)
+        show_wk, show_lunar = cfg.get("weeknum", True), cfg.get("lunar", True)
+        left, top = (30 if show_wk else 0), 26
+        cw, ch = (W - left) / 7, (H - top) / len(weeks)
+        size = 10 if ch >= 90 and cw >= 110 else 9
+        f_num, f_small = self.font(size + 1, True), self.font(size - 1)
+        f_ev, f_ev_done = self.font(size), self.font(size, strike=True)
+        f_head = self.font(size, True)
+        line_h = f_ev.metrics("linespace") + 2
+
+        for c, name in enumerate(self.DAYS):            # 요일 줄
+            x0 = left + c * cw
+            cv.create_rectangle(x0 + 1, 1, x0 + cw - 1, top - 1, fill=th["head"], outline="")
+            color = th["sun"] if c == 0 else (th["sat"] if c == 6 else th["fg"])
+            cv.create_text(x0 + cw / 2, top / 2, text=name if cw > 70 else name[0], fill=color, font=f_head)
+        if show_wk:
+            cv.create_rectangle(1, 1, left - 1, top - 1, fill=th["head"], outline="")
+
+        by_date = self.app.store.group_by_date()
+        for r, week in enumerate(weeks):
+            y0 = top + r * ch
+            if show_wk:                                 # 주 번호 (월요일 기준 ISO 주)
+                cv.create_rectangle(1, y0 + 1, left - 1, y0 + ch - 1, fill=th["head"], outline="")
+                cv.create_text(left / 2, y0 + ch / 2, text=str(week[1].isocalendar()[1]), fill=th["sub"], font=f_head)
+            for c, d in enumerate(week):
+                x0 = left + c * cw
+                iso = d.isoformat()
+                tag = ("day:" + iso,)
+                in_m = d.month == m
+                info = kcal.day_info(d, show_lunar)
+                hol = info["holiday"]
+                fill = th["other"] if not in_m else (th["weekend"] if c in (0, 6) or hol else th["cell"])
+                cv.create_rectangle(x0 + 1, y0 + 1, x0 + cw - 1, y0 + ch - 1, fill=fill, outline="", tags=tag)
+                if d == self.sel and d != today:
+                    cv.create_rectangle(x0 + 2, y0 + 2, x0 + cw - 2, y0 + ch - 2, outline=th["sel"], width=1, tags=tag)
+                if d == today:
+                    cv.create_rectangle(x0 + 2, y0 + 2, x0 + cw - 2, y0 + ch - 2, outline=th["today"], width=2, tags=tag)
+
+                numc = th["sub"] if not in_m else (th["hol"] if c == 0 or hol else (th["sat"] if c == 6 else th["fg"]))
+                cv.create_text(x0 + 7, y0 + 5, text=str(d.day), anchor="nw", font=f_num, fill=numc, tags=tag)
+                nx = x0 + 7 + f_num.measure(str(d.day)) + 6
+                label, lc = ((hol, th["hol"]) if hol else (info["term"], th["term"]) if info["term"]
+                             else (("(음)" + info["lunar"]) if info["lunar"] else "", th["sub"]))
+                tm = core.team_for(d, s)
+                team_w = f_small.measure("3팀") + 10 if tm else 0
+                if label:
+                    cv.create_text(nx, y0 + 7, text=self.elide(label, f_small, x0 + cw - nx - team_w - 4), anchor="nw",
+                                   font=f_small, fill=lc if in_m else th["sub"], tags=tag)
+                if tm:
+                    col = TEAM_COLORS.get(tm, "#7a4fd6")
+                    if tm == s.get("my_team"):
+                        bw = f_small.measure("%d팀" % tm) + 6
+                        cv.create_rectangle(x0 + cw - 6 - bw, y0 + 5, x0 + cw - 6, y0 + 7 + f_small.metrics("linespace"),
+                                            fill=col, outline="", tags=tag)
+                        col = "#ffffff"
+                    cv.create_text(x0 + cw - 9, y0 + 7, text="%d팀" % tm, anchor="ne", font=f_small, fill=col, tags=tag)
+
+                evs = by_date.get(iso, [])
+                ey = y0 + 9 + f_num.metrics("linespace")
+                room = max(0, int((y0 + ch - 4 - ey) // line_h))
+                show = evs if len(evs) <= room else evs[:max(0, room - 1)]
+                for ev in show:
+                    n = core.dday(ev["date"], today)
+                    color = (th["done"] if ev.get("done") else th["late"] if n <= 0 and in_m
+                             else th["soon"] if n <= 3 else th["ev"])
+                    text = "• " + ((ev["time"] + " ") if ev.get("time") else "") + ev["title"]
+                    fnt = f_ev_done if ev.get("done") else f_ev
+                    cv.create_text(x0 + 7, ey, text=self.elide(text, fnt, cw - 14), anchor="nw", font=fnt,
+                                   fill=color if in_m else th["sub"], tags=tag + ("ev:" + ev["id"],))
+                    ey += line_h
+                if len(evs) > len(show):
+                    cv.create_text(x0 + 7, ey, text="+%d건 더" % (len(evs) - len(show)), anchor="nw",
+                                   font=f_small, fill=th["sub"], tags=tag)
+
+    # ---- 마우스 --------------------------------------------------------------
+    def _hit(self):
+        """마우스 아래: (날짜, 일정 또는 None)"""
+        d = ev = None
+        for t in self.cv.gettags("current"):
+            if t.startswith("day:"):
+                d = dt.date.fromisoformat(t[4:])
+            elif t.startswith("ev:"):
+                ev = self.app.store.get(t[3:])
+        return d, ev
+
+    def on_motion(self, _e):
+        d, ev = self._hit()
+        if ev:
+            n = core.dday(ev["date"], dt.date.today())
+            state = "완료" if ev.get("done") else core.dday_text(n)
+            self.hover.config(text="%s · %s %s · %s   (더블클릭 = 공문 열기, 우클릭 = 메뉴)" % (
+                state, ev["date"][5:], ev.get("kind", ""), ev["title"]))
+        elif d:
+            info = kcal.day_info(d)
+            extra = " · ".join(x for x in (info["holiday"], info["term"], ("음력 " + info["lunar"]) if info["lunar"] else "") if x)
+            self.hover.config(text="%d월 %d일 %s   (더블클릭 = 이날 큰 달력에서 보기)" % (d.month, d.day, extra))
+        else:
+            self.hover.config(text="")
+
+    def on_click(self, _e):
+        d, _ev = self._hit()
+        if d:
+            self.sel = d
+            self.redraw()
+
+    def on_double(self, _e):
+        d, ev = self._hit()
+        if ev:
+            self.app.open_event_doc(ev)
+        elif d:
+            self.app.show_main()
+            self.app.go_to(d)
+
+    def on_right(self, e):
+        d, ev = self._hit()
+        if ev:
+            self.app.popup_menu(e.x_root, e.y_root, ev)
+            return
+        self.show_menu(e.x_root, e.y_root, d)
+
+    def menu_at_button(self):
+        self.show_menu(self.win.winfo_rootx() + self.win.winfo_width() - 180, self.win.winfo_rooty() + 30, None)
+
+    def show_menu(self, x, y, d):
+        m = self.menu
+        m.delete(0, "end")
+        if d:
+            m.add_command(label="📅 %d월 %d일 큰 달력에서 보기" % (d.month, d.day),
+                          command=lambda: (self.app.show_main(), self.app.go_to(d)))
+        m.add_command(label="＋ 공문 추가", command=lambda: self.app.open_add_dialog())
+        m.add_command(label="오늘로", command=self.go_today)
+        m.add_separator()
+        mode = self.cfg.get("mode", "desktop")
+        for key, label in (("desktop", "바탕화면에 깔기 (다른 창 아래)"), ("normal", "일반 창"), ("top", "항상 위")):
+            m.add_command(label=("● " if mode == key else "○ ") + label, command=lambda k=key: self.set_cfg("mode", k))
+        m.add_command(label=("☑ " if self.cfg.get("lunar", True) else "☐ ") + "음력 표시",
+                      command=lambda: self.set_cfg("lunar", not self.cfg.get("lunar", True)))
+        m.add_command(label=("☑ " if self.cfg.get("weeknum", True) else "☐ ") + "주 번호 표시",
+                      command=lambda: self.set_cfg("weeknum", not self.cfg.get("weeknum", True)))
+        m.add_command(label="밝은 테마" if self.cfg.get("theme", "dark") == "dark" else "어두운 테마",
+                      command=lambda: self.set_cfg("theme", "light" if self.cfg.get("theme", "dark") == "dark" else "dark"))
+        m.add_separator()
+        m.add_command(label="위젯 설정…", command=lambda: self.app.open_settings("widget"))
+        m.add_command(label="✕ 달력 위젯 닫기", command=self.close)
+        try:
+            m.tk_popup(x, y)
+        finally:
+            m.grab_release()
+
+    def set_cfg(self, key, value):
+        self.cfg[key] = value
+        core.save_settings(self.app.settings)
+        if key == "theme":                              # 색이 바뀌면 창을 새로 만든다
+            self.app.reopen_widget("desk")
+            return
+        if key == "mode":
+            self.apply_mode()
+        self.redraw()
+
+    def flash(self, times=8):
+        if not self.win.winfo_exists():
+            return
+        color = "#d9480f" if times > 0 and times % 2 else self.th["bar"]
+        for w in [self.bar] + list(self.bar.winfo_children()):
+            w.config(bg=color)
+        if times > 0:
+            self.win.after(450, lambda: self.flash(times - 1))
+
+    def close(self, quit_if_alone=True):
+        if self._job:
+            self.win.after_cancel(self._job)
+        self.save_cfg()
+        self.win.destroy()
+        self.app.widget_closed("desk", quit_if_alone)
 
 
 # ══════════════════════════════════════════════════════════════
@@ -1446,11 +1867,12 @@ class App:
         self.day_events = []                            # 오른쪽 목록에 보이는 일정들
         self.soon_events = []
         self.rel_events = []
-        self.status_win = self.ach_win = self.search_win = self.widget = None
-        self.widget_only = widget_only
+        self.status_win = self.ach_win = self.search_win = self.widget = self.deskcal = None
+        self._grid_key = None                           # 달력을 마지막으로 그린 조건 (같으면 다시 안 그린다)
+        self._cells = {}
+        self._srev = 0                                  # 설정이 바뀔 때마다 1씩 오른다
         self._click_job = None                          # 단일 클릭/더블 클릭을 구분하기 위한 예약
         self.pending_select_id = None                   # 클릭한 일정을 오른쪽 목록에서 선택해 두기 위함
-        self.last_clip = ""
         self.watcher = None
         self._tick = 0
         self.title_var, self.sel_var, self.team_var = tk.StringVar(), tk.StringVar(), tk.StringVar()
@@ -1475,6 +1897,8 @@ class App:
         if widget_only:                                 # 위젯만 띄우기: 큰 달력 창은 숨겨 둔다
             self.root.withdraw()
             self.open_widget()
+            if self.widget is None and self.deskcal is None:
+                self.open_widget("desk")
 
     # ---- 화면 만들기 -----------------------------------------------------
     def build_header(self):
@@ -1533,17 +1957,22 @@ class App:
         sep()
         ttk.Button(inner, text="📋 업무 현황", command=self.open_status).pack(side="left")
         ttk.Button(inner, text="★ 내 실적", command=self.open_achievements).pack(side="left", padx=6)
-        ttk.Button(inner, text="🔍 검색", command=lambda: self.open_search("")).pack(side="left")
 
         ttk.Button(inner, text="⚙ 설정", command=lambda: self.open_settings()).pack(side="right")
         mb = ttk.Menubutton(inner, text="📤 내보내기")
         m = tk.Menu(mb, tearoff=0)
         m.add_command(label="📊 엑셀(.xlsx) - 업무 처리 현황", command=self.export_xlsx)
-        m.add_command(label="CSV - 업무 처리 현황", command=self.export_csv)
         m.add_command(label="📅 캘린더(.ics) - 구글·아웃룩", command=self.export_ics)
         mb["menu"] = m
         mb.pack(side="right", padx=6)
-        ttk.Button(inner, text="🧩 위젯", command=self.open_widget).pack(side="right")
+        wb = ttk.Menubutton(inner, text="🧩 위젯")
+        wm = tk.Menu(wb, tearoff=0)
+        wm.add_command(label="📅 달력 위젯 (바탕화면 큰 달력)", command=lambda: self.open_widget("desk"))
+        wm.add_command(label="📋 목록 위젯 (오늘 근무 · 임박 기한)", command=lambda: self.open_widget("list"))
+        wm.add_separator()
+        wm.add_command(label="위젯 고르기 · 설정…", command=lambda: self.open_settings("widget"))
+        wb["menu"] = wm
+        wb.pack(side="right")
         tk.Frame(self.root, bg=BORDER, height=1).pack(fill="x")
 
     def build_statusbar(self):
@@ -1551,7 +1980,7 @@ class App:
         bar.pack(side="bottom", fill="x")
         bar.pack_propagate(False)
         self.status_items = {}
-        for key, tab in (("store", "share"), ("dl", "auto"), ("clip", "auto"), ("alert", "alert")):
+        for key, tab in (("store", "share"), ("dl", "auto"), ("alert", "alert")):
             lb = tk.Label(bar, text="", bg=STATUS_BG, fg=SUB, font=(FONT, 9), cursor="hand2", padx=8)
             lb.pack(side="left")
             lb.bind("<Button-1>", lambda e, t=tab: self.open_settings(t))
@@ -1572,7 +2001,6 @@ class App:
             store = "💾 내 PC 에 저장"
         self.status_items["store"].config(text=store)
         self.status_items["dl"].config(text="📥 다운로드 감시 " + ("켜짐" if self.watcher else "꺼짐"))
-        self.status_items["clip"].config(text="📋 복사 분석 " + ("켜짐" if s.get("clip_watch") else "꺼짐"))
         self.status_items["alert"].config(text="⏰ 기한 알림 " + ("켜짐" if s.get("alerts_on", True) else "꺼짐"))
 
     def build_body(self):
@@ -1629,11 +2057,19 @@ class App:
 
     # ---- 달력 그리기 -----------------------------------------------------
     def refresh(self):
+        """화면 새로 고침. 달·일정·설정이 그대로면 달력은 다시 그리지 않고 선택 표시만 옮긴다 (빠름)."""
         self.today = dt.date.today()
+        key = (self.year, self.month, self.store.version, self.today, self._srev)
+        if key == self._grid_key:
+            self._mark_selected()
+            self.refresh_side()
+            return
+        self._grid_key = key
         self.title_var.set("%d년 %d월" % (self.year, self.month))
         self.update_team_label()
         for w in self.cal_frame.winfo_children():
             w.destroy()
+        self._cells = {}
 
         by_date = self.store.group_by_date()
         weeks = calendar.Calendar(firstweekday=6).monthdatescalendar(self.year, self.month)   # 일요일 시작
@@ -1651,10 +2087,15 @@ class App:
                 self.draw_day(day, r, c, by_date.get(day.isoformat(), []))
 
         self.refresh_side()
-        for w in (self.status_win, self.ach_win, self.search_win, self.widget):   # 열려 있는 창도 같이 갱신
+        for w in (self.status_win, self.ach_win, self.search_win, self.widget, self.deskcal):   # 열려 있는 창도 같이 갱신
             if w is not None:
                 w.refresh()
         self.update_statusbar()
+
+    def _mark_selected(self):
+        for d, cell in self._cells.items():
+            sel = d == self.selected
+            cell.config(highlightthickness=2 if sel else 1, highlightbackground=PRIMARY if sel else "#e3e7ee")
 
     def update_team_label(self):
         team = core.team_for(self.today, self.settings)
@@ -1673,16 +2114,24 @@ class App:
         cell = tk.Frame(self.cal_frame, bg=bg, highlightthickness=2 if is_sel else 1,
                         highlightbackground=PRIMARY if is_sel else "#e3e7ee")
         cell.grid(row=row, column=col, sticky="nsew", padx=1, pady=1)
+        self._cells[day] = cell
 
-        head = tk.Frame(cell, bg=bg)                    # 맨 윗줄: 날짜(왼쪽) + 근무팀(오른쪽)
+        head = tk.Frame(cell, bg=bg)                    # 맨 윗줄: 날짜 · 공휴일/절기(왼쪽) + 근무팀(오른쪽)
         head.pack(fill="x", pady=(2, 0))
-        fg = "#b8bcc4" if not in_month else ("#c0392b" if col == 0 else ("#2f6fed" if col == 6 else "#1f2430"))
+        info = kcal.day_info(day, lunar=False)
+        hol = info["holiday"]
+        fg = "#b8bcc4" if not in_month else ("#c0392b" if col == 0 or hol else ("#2f6fed" if col == 6 else "#1f2430"))
         if is_today:
             num = tk.Label(head, text=" %d " % day.day, font=(FONT, 9, "bold"), fg="#ffffff", bg=PRIMARY)
         else:
             num = tk.Label(head, text=str(day.day), font=(FONT, 9, "bold"), fg=fg, bg=bg, anchor="w")
         num.pack(side="left", padx=4)
         widgets = [cell, head, num]
+        if hol or info["term"]:
+            hl = tk.Label(head, text=hol or info["term"], font=(FONT, 8), bg=bg,
+                          fg=("#c0392b" if hol else "#2e9d5b") if in_month else "#b8bcc4")
+            hl.pack(side="left")
+            widgets.append(hl)
 
         team = core.team_for(day, self.settings)
         if team:
@@ -1963,25 +2412,15 @@ class App:
             except OSError:
                 pass
 
-    def export_csv(self):
-        path = filedialog.asksaveasfilename(parent=self.root, defaultextension=".csv", initialfile="업무처리현황.csv",
-                                            filetypes=[("CSV 파일", "*.csv")])
-        if path:
-            core.export_csv(self.store.events, path)
-            messagebox.showinfo("완료", "저장했습니다.\n엑셀에서 열 수 있습니다.", parent=self.root)
-
     # ---- 창 열기 ------------------------------------------------------------
-    def open_add_dialog(self, prefill="", path=None):
-        AddDialog(self, prefill, path=path)
+    def open_add_dialog(self, path=None):
+        AddDialog(self, path=path)
 
     def open_batch(self, paths=()):
         BatchDialog(self, paths)
 
     def open_settings(self, tab="team"):
         SettingsDialog(self, tab)
-
-    def open_team_settings(self):
-        self.open_settings("team")
 
     def open_search(self, query=""):
         query = "" if query == self.SEARCH_HINT else query
@@ -1997,11 +2436,35 @@ class App:
             return
         self.ach_win = AchievementWindow(self)
 
-    def open_widget(self):
-        if self.widget is not None:
-            self.widget.win.lift()
-            return
-        self.widget = WidgetWindow(self)
+    def open_widget(self, kind=None):
+        """kind: "desk"(달력 위젯) / "list"(목록 위젯) / None = 설정에서 고른 위젯 모두"""
+        kinds = [kind] if kind else [k for k, on in self.settings.get("widgets", {"desk": True}).items() if on]
+        for k in kinds:
+            cur = self.deskcal if k == "desk" else self.widget
+            if cur is not None:
+                cur.win.deiconify()
+                if k == "list":
+                    cur.win.lift()
+                continue
+            if k == "desk":
+                self.deskcal = DeskCalendar(self)
+            else:
+                self.widget = WidgetWindow(self)
+
+    def reopen_widget(self, kind):
+        """모양(테마 등)이 바뀐 위젯을 닫았다가 다시 연다"""
+        cur = self.deskcal if kind == "desk" else self.widget
+        if cur is not None:
+            cur.close(quit_if_alone=False)
+            self.open_widget(kind)
+
+    def widget_closed(self, kind, quit_if_alone=True):
+        if kind == "desk":
+            self.deskcal = None
+        else:
+            self.widget = None
+        if quit_if_alone and self.widget is None and self.deskcal is None and not self.root.winfo_viewable():
+            self.root.destroy()                         # 큰 창이 숨겨진 상태에서 마지막 위젯을 닫으면 프로그램 종료
 
     def open_status(self):
         if self.status_win is not None:
@@ -2019,15 +2482,16 @@ class App:
 
     def on_close_main(self):
         """위젯이 떠 있으면 큰 창만 숨기고 위젯은 계속 둔다"""
-        if self.widget is not None:
+        if self.widget is not None or self.deskcal is not None:
             self.root.withdraw()
-            Toast(self, "🧩 위젯은 계속 떠 있어요", "달력을 다시 보려면 위젯의 ▣ 를 누르세요.\n위젯을 닫으면 프로그램이 끝납니다.", timeout=6000)
+            Toast(self, "🧩 위젯은 계속 떠 있어요", "큰 달력을 다시 보려면 위젯의 ▣ 를 누르세요.\n위젯을 모두 닫으면 프로그램이 끝납니다.", timeout=6000)
         else:
             self.root.destroy()
 
     # ---- 설정 적용 -----------------------------------------------------------
-    def apply_settings(self, first=False, share_changed=False):
+    def apply_settings(self, first=False, share_changed=False, desk_changed=False):
         s = self.settings
+        self._srev += 1
         if share_changed:
             self.switch_store()
         dl = s.get("download_dir") or gs.default_download_dir()
@@ -2036,10 +2500,8 @@ class App:
                 self.watcher = gs.FolderWatcher(dl)     # 켤 때 이미 있던 파일은 무시
         else:
             self.watcher = None
-        if s.get("clip_watch") and not getattr(self, "_clip_running", False):
-            self.last_clip = self.read_clip()           # 지금 복사돼 있는 내용은 무시하고 '새로 복사'만 감시
-            self._clip_running = True
-            self.root.after(1000, self.poll_clipboard)
+        if desk_changed and self.deskcal is not None:   # 달력 위젯 모양이 바뀌었으면 새로 연다
+            self.reopen_widget("desk")
         if not first:
             self.refresh()
             self.check_alerts(schedule=False)
@@ -2117,32 +2579,55 @@ class App:
                 body += "\n· 외 %d건" % (len(items) - 4)
             Toast(self, "⏰ 기한 알림 %d건" % len(items), body, color="#c0392b",
                   on_open=lambda: (self.show_main(), self.nb.select(1)), timeout=30000)
-        if self.widget is not None and self.settings.get("widget_flash", True):
-            self.widget.flash()
-
-    # ---- 복사하면 자동 분석 (클립보드 감시) ----------------------------------
-    def read_clip(self):
-        try:
-            return self.root.clipboard_get()
-        except tk.TclError:                             # 클립보드가 비었거나 글자가 아닐 때
-            return ""
-
-    def poll_clipboard(self):
-        if not self.settings.get("clip_watch"):
-            self._clip_running = False
-            return
-        text = self.read_clip()
-        if text and text != self.last_clip:
-            self.last_clip = text
-            if len(text) > 100:                         # 너무 짧은 복사는 공문이 아니므로 무시
-                res = core.analyze(text, lex=self.lex)
-                if any(c["kind"] in ("기한", "애매") for c in res["candidates"]):
-                    self.open_add_dialog(prefill=text)
-        self.root.after(1000, self.poll_clipboard)
+        if self.settings.get("widget_flash", True):
+            for w in (self.widget, self.deskcal):
+                if w is not None:
+                    w.flash()
 
     def run(self):
         self.root.mainloop()
 
 
+def selftest():
+    """exe 를 만든 뒤 윈도우에서 실제로 켜 보는 검사 (--selftest). 결과는 selftest.log 에 적는다."""
+    import traceback
+    out = []
+    try:
+        for mod in ("gongmun_pdf", "gongmun_xlsx", "gongmun_kcal", "gongmun_rename", "gongmun_system"):
+            __import__(mod)
+        out.append("modules ok")
+        out.append("lunar 2026-11-23 = %s" % (kcal.solar_to_lunar(dt.date(2026, 11, 23)),))
+        res = core.analyze("제목 시험 공문\n1. 자료를 2026. 12. 1.(화)까지 제출하여 주시기 바랍니다.")
+        out.append("analyze %s" % [(str(c["date"]), c["kind"]) for c in res["candidates"]])
+        app = App()
+        app.root.update()
+        out.append("main window ok")
+        app.open_widget("desk")
+        app.open_widget("list")
+        app.root.update()
+        out.append("widgets ok (desktop pinned=%s)" % app.deskcal.pinned)
+        for make in (lambda: AddDialog(app), lambda: BatchDialog(app), lambda: SettingsDialog(app, "widget"),
+                     lambda: StatusWindow(app), lambda: SearchWindow(app, "시험")):
+            w = make()
+            app.root.update()
+            w.win.destroy()
+        out.append("dialogs ok")
+        x = core.data_path("selftest.xlsx")
+        core.export_xlsx([], x)
+        os.remove(x)
+        out.append("xlsx ok, autostart supported=%s" % gs.autostart_supported())
+        app.deskcal.close(quit_if_alone=False)
+        app.widget.close(quit_if_alone=False)
+        app.root.destroy()
+        out.append("OK")
+    except Exception:
+        out.append(traceback.format_exc())
+    with open(core.data_path("selftest.log"), "w", encoding="utf-8") as f:
+        f.write("\n".join(out))
+
+
 if __name__ == "__main__":
-    App(widget_only="--widget" in sys.argv).run()       # python gongmun_calendar.py --widget  : 위젯만 실행
+    if "--selftest" in sys.argv:
+        selftest()
+    else:
+        App(widget_only="--widget" in sys.argv).run()   # python gongmun_calendar.py --widget  : 위젯만 실행

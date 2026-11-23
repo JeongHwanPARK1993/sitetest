@@ -27,25 +27,48 @@ jobs:
           python-version: "3.12"
 
       - name: Install
-        run: pip install pyinstaller==6.11.1 pypdf==5.1.0
+        run: pip install pyinstaller==6.11.1
 
-      - name: Build exe
+      - name: Build exe (폴더형 - 켜지는 속도가 빠름)
         working-directory: 공문달력ver/달력
         run: >
-          pyinstaller --noconfirm --onefile --windowed --name GongmunCalendar
+          pyinstaller --noconfirm --onedir --windowed --name GongmunCalendar
           --hidden-import gongmun_xlsx --hidden-import gongmun_pdf --hidden-import gongmun_system
-          --hidden-import gongmun_rename --hidden-import pypdf
+          --hidden-import gongmun_rename --hidden-import gongmun_kcal
+          --exclude-module ssl --exclude-module _ssl --exclude-module _hashlib
+          --exclude-module bz2 --exclude-module _bz2 --exclude-module lzma --exclude-module _lzma
+          --exclude-module decimal --exclude-module _decimal --exclude-module unittest --exclude-module pydoc
+          --exclude-module doctest --exclude-module xmlrpc --exclude-module http --exclude-module email
+          --exclude-module sqlite3 --exclude-module asyncio --exclude-module multiprocessing
+          --exclude-module pypdf --exclude-module pdfplumber
           gongmun_calendar.py
+
+      - name: Self test on Windows
+        shell: python
+        run: |
+          import os, shutil, subprocess, sys
+          dist = os.path.join("공문달력ver", "달력", "dist", "GongmunCalendar")
+          os.replace(os.path.join(dist, "GongmunCalendar.exe"), os.path.join(dist, "공문달력.exe"))
+          test = os.path.join(os.environ["RUNNER_TEMP"], "selftest_app")
+          shutil.copytree(dist, test)
+          subprocess.run([os.path.join(test, "공문달력.exe"), "--selftest"], timeout=300)
+          log = open(os.path.join(test, "selftest.log"), encoding="utf-8").read()
+          print(log)
+          if not log.rstrip().endswith("OK"):
+              sys.exit(1)
 
       - name: Zip
         shell: python
         run: |
           import os, zipfile
-          base = os.path.join("공문달력ver", "달력", "dist", "GongmunCalendar.exe")
+          dist = os.path.join("공문달력ver", "달력", "dist", "GongmunCalendar")
           os.makedirs(os.path.join("공문달력ver", "배포"), exist_ok=True)
           out = os.path.join("공문달력ver", "배포", "공문달력.zip")
-          with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
-              z.write(base, "공문달력/공문달력.exe")
+          with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as z:
+              for root, _, files in os.walk(dist):
+                  for f in files:
+                      full = os.path.join(root, f)
+                      z.write(full, os.path.join("공문달력", os.path.relpath(full, dist)))
               z.write(os.path.join("공문달력ver", "사용설명.txt"), "공문달력/사용설명.txt")
           print(out, os.path.getsize(out))
 

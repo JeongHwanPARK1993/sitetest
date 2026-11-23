@@ -7,7 +7,11 @@ gongmun_xlsx.py  -  추가 설치 없이 엑셀(.xlsx) 파일 만들기
   - 줄마다 상태 색: done(회색), late(빨강), soon(노랑)
 """
 import zipfile
-from xml.sax.saxutils import escape
+
+
+def escape(text):
+    """XML 특수문자 바꾸기 (xml.sax 를 안 쓰면 exe 가 훨씬 작아진다)"""
+    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 # 스타일 번호 (아래 STYLES 의 cellXfs 순서)
 _STYLE_IDX = {"head": 1, "": 2, "done": 3, "late": 4, "soon": 5}

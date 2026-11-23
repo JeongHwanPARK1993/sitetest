@@ -12,7 +12,6 @@ gongmun_core.py  -  공문에서 '기한'을 찾아내는 핵심 부분 (화면 
 용어는 같은 폴더의 '용어사전.txt' 에 있습니다. 코드를 안 고치고 그 파일만 고치면 됩니다.
 """
 import datetime as dt
-import csv
 import filecmp
 import json
 import os
@@ -567,6 +566,8 @@ class Store:
         self.events = []
         self._tomb = {}                                 # 지운 일정 id -> 지운 시각
         self.mtime = 0
+        self.version = 0                                # 내용이 바뀔 때마다 1씩 오른다 (화면 다시 그릴지 판단)
+        self._group = (None, {})
         self.load()
 
     @staticmethod
@@ -602,6 +603,7 @@ class Store:
         live, self._tomb = self._split(self._read_file())
         self.events = [e for i, e in live.items() if i not in self._tomb]
         self.mtime = self._file_mtime()
+        self.version += 1
 
     def _file_mtime(self):
         try:
@@ -633,6 +635,7 @@ class Store:
                 del merged[i]
         self._tomb = tomb
         self.events = sorted(merged.values(), key=lambda e: (e.get("date", ""), e.get("time") or ""))
+        self.version += 1
 
     def save(self):
         self._merge_with_disk()
@@ -701,9 +704,13 @@ class Store:
         self.save()
 
     def group_by_date(self):
+        """{날짜: [일정...]}  (내용이 바뀌지 않았으면 지난번 결과를 그대로 쓴다)"""
+        if self._group[0] == self.version:
+            return self._group[1]
         res = {}
         for e in sorted(self.events, key=lambda e: (e["date"], e.get("time") or "")):
             res.setdefault(e["date"], []).append(e)
+        self._group = (self.version, res)
         return res
 
     def upcoming(self, today, days=14):
@@ -851,17 +858,6 @@ def resolve_doc_path(ev):
                 if os.path.isfile(p):
                     return p
     return None
-
-
-def export_csv(events, path):
-    """업무 처리 현황을 엑셀에서 열 수 있는 CSV 로 저장"""
-    with open(path, "w", encoding="utf-8-sig", newline="") as f:
-        w = csv.writer(f)
-        w.writerow(["상태", "구분", "날짜", "시간", "제목", "문서번호", "완료일", "붙임"])
-        for e in sorted(events, key=lambda e: (e["date"], e.get("time") or "")):
-            w.writerow(["완료" if e.get("done") else "미처리", e.get("kind", ""), e["date"], e.get("time", ""),
-                        e.get("title", ""), e.get("doc_no", ""), e.get("done_at", ""),
-                        " / ".join(e.get("attachments", []))])
 
 
 # ──────────────────────────────────────────────────────────────
