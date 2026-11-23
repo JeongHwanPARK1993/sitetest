@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-gongmun_calendar.py  -  공문 달력 (화면 부분)
+gongmun_calendar.py  -  공문비서 (공문 달력 · 화면 부분)
 
 실행:  python gongmun_calendar.py            (전체 화면)
        python gongmun_calendar.py --widget   (바탕화면 위젯만)
@@ -19,6 +19,7 @@ gongmun_calendar.py  -  공문 달력 (화면 부분)
 import calendar
 import datetime as dt
 import os
+import re
 import subprocess
 import sys
 import tkinter as tk
@@ -32,8 +33,40 @@ import gongmun_rename as rn                        # 공문 PDF 에서 제목·�
 import gongmun_kcal as kcal                        # 음력 · 24절기 · 공휴일
 import gongmun_system as gs                        # 파일 끌어놓기 · 윈도우 시작 시 실행 · 폴더 감시 · 바탕화면 고정
 
+APP_NAME = "공문비서"
 FONT = "맑은 고딕"
-KINDS = ["기한", "행사", "애매", "기타", "변경전"]
+KINDS = ["기한", "행사", "메모", "애매", "기타", "변경전"]
+
+# 일정 색깔 (달력 칸 배경, 글자색) - 설정 창에서 고른다. 자동 = 기한에 따라 파랑/노랑/빨강
+EVENT_COLORS = {"파랑": ("#e7f1ff", "#1f4e9c"), "초록": ("#e3f6ea", "#1d6b3e"), "노랑": ("#fff3cd", "#7a5b00"),
+                "주황": ("#ffe6cc", "#9a4b00"), "빨강": ("#fde2e1", "#a12622"), "보라": ("#efe6ff", "#5b3a9c"),
+                "분홍": ("#fde6f1", "#a12a66"), "회색": ("#eceef1", "#4b5563")}
+COLOR_NAMES = ["자동"] + list(EVENT_COLORS)
+DARK_TEXT = {"파랑": "#8fbcff", "초록": "#6fd69a", "노랑": "#ffd27a", "주황": "#ffb067", "빨강": "#ff8a80",
+             "보라": "#c4a5ff", "분홍": "#ff9ccc", "회색": "#b0bcc4"}     # 어두운 달력 위젯에서 쓸 글자색
+
+
+def resource_path(name):
+    """아이콘 같은 프로그램 부속 파일 위치 (exe 로 만들어도 찾을 수 있게)"""
+    base = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
+    return os.path.join(base, name)
+
+
+def ev_label(ev):
+    """달력에 보일 글자 (설정 창에서 바꿀 수 있다. 없으면 공문 제목)"""
+    return ev.get("label") or ev.get("title", "")
+
+
+def parse_time_text(tm):
+    """'14:00', '14시', '9:5' -> '14:00'. 빈칸이면 ''"""
+    tm = tm.strip().replace("시", ":").replace("분", "").rstrip(":")
+    if not tm:
+        return ""
+    h, _, m = tm.partition(":")
+    h, m = int(h), int(m or 0)
+    if not (0 <= h <= 23 and 0 <= m <= 59):
+        raise ValueError(tm)
+    return "%02d:%02d" % (h, m)
 TEAM_COLORS = {1: "#2f6fed", 2: "#2e9d5b", 3: "#d98200"}      # 1팀 파랑 / 2팀 초록 / 3팀 주황
 
 # 화면 색 (한곳에서 바꾸면 전체가 바뀐다)
@@ -84,6 +117,9 @@ def setup_style(root):
     st.configure("TEntry", padding=4, fieldbackground=CARD, bordercolor=BORDER)
     st.configure("TCombobox", padding=3)
     st.configure("TMenubutton", padding=(10, 5), background=CARD, bordercolor=BORDER)
+    st.configure("Seg.Toolbutton", padding=(12, 5), background="#eef2f8", font=(FONT, 10, "bold"), anchor="center")
+    st.map("Seg.Toolbutton", background=[("selected", PRIMARY), ("active", "#dde6f5")],
+           foreground=[("selected", "#ffffff")])
 
 
 def listbox(parent, **kw):
@@ -114,6 +150,8 @@ def event_colors(ev, today):
     """일정 칸의 색: (배경, 글자). 완료=회색, 지남/당일=빨강, 3일 이내=노랑, 나머지=파랑"""
     if ev.get("done"):
         return "#eceef1", "#8a8f98"
+    if ev.get("color") in EVENT_COLORS:
+        return EVENT_COLORS[ev["color"]]
     n = core.dday(ev["date"], today)
     if n <= 0:
         return "#fde2e1", "#a12622"
@@ -167,7 +205,7 @@ def doc_month(info, doc_date=None):
 def make_event(date_iso, time_text, kind, snippet, common):
     ev = {"date": date_iso, "time": time_text, "kind": kind, "snippet": snippet}
     for k, v in common.items():                         # 할 일 목록은 일정마다 따로 복사
-        ev[k] = [dict(t) for t in v] if k == "todos" else v
+        ev[k] = v
     return ev
 
 
@@ -261,17 +299,12 @@ class AddDialog:
         self.rows_frame.pack(fill="x")
         ttk.Button(dates, text="+ 날짜 직접 추가", command=self.add_row).pack(anchor="w", pady=(6, 0))
 
-        # ④ 붙임 · 회신 할 일
-        extra = ttk.LabelFrame(right, text=" ④ 붙임 · 회신 할 일 (한 줄에 하나) ", padding=8)
+        # ④ 붙임
+        extra = ttk.LabelFrame(right, text=" ④ 붙임 (한 줄에 하나) ", padding=8)
         extra.pack(fill="both", expand=True, padx=(8, 0))
-        for col, (label, attr) in enumerate([("📎 붙임", "attach_text"), ("☑ 회신 할 일 (달력에서 체크할 수 있어요)", "todo_text")]):
-            ttk.Label(extra, text=label, font=(FONT, 9, "bold")).grid(row=0, column=col, sticky="w", padx=4)
-            t = tk.Text(extra, height=4, wrap="word", font=(FONT, 9), relief="flat", bg="#fbfcfe",
-                        highlightthickness=1, highlightbackground=BORDER, highlightcolor=PRIMARY, padx=4, pady=3)
-            t.grid(row=1, column=col, sticky="nsew", padx=4)
-            setattr(self, attr, t)
-            extra.columnconfigure(col, weight=1)
-        extra.rowconfigure(1, weight=1)
+        self.attach_text = tk.Text(extra, height=4, wrap="word", font=(FONT, 9), relief="flat", bg="#fbfcfe",
+                                   highlightthickness=1, highlightbackground=BORDER, highlightcolor=PRIMARY, padx=4, pady=3)
+        self.attach_text.pack(fill="both", expand=True)
 
         if not gs.enable_file_drop(win, self.on_drop):
             self.hint.config(text="📂 [파일 불러오기]로 공문 PDF/HWPX 를 여세요.  공문 내용을 복사해서 붙여넣어도 됩니다.")
@@ -320,8 +353,6 @@ class AddDialog:
             self.docno_var.set(result["doc_no"])
         self.attach_text.delete("1.0", "end")
         self.attach_text.insert("1.0", "\n".join(result["attachments"]))
-        self.todo_text.delete("1.0", "end")
-        self.todo_text.insert("1.0", "\n".join(result.get("todos") or result["requests"]))
         self.emails = result["emails"]
         self.doc_date = result.get("doc_date")         # 공문 머리말의 시행·기안 날짜 (정리할 달)
 
@@ -395,8 +426,7 @@ class AddDialog:
         docno = self.docno_var.get().strip()
         common = {"title": title, "doc_no": docno, "org": self.org_var.get().strip(),
                   "attachments": lines(self.attach_text), "emails": self.emails,
-                  "todos": [{"text": t, "done": False} for t in lines(self.todo_text)],
-                  "refs": core.find_doc_refs(text, docno)}
+                  "refs": core.find_doc_refs(text, docno), "body": text.strip()}
         new_events = []
         for r in self.rows:
             if not r["check"].get():
@@ -406,14 +436,11 @@ class AddDialog:
             except ValueError:
                 messagebox.showwarning("날짜 확인", "날짜를 YYYY-MM-DD 형식으로 적어 주세요.\n(예: 2026-11-25)", parent=self.win)
                 return
-            tm = r["time"].get().strip()
-            if tm:
-                try:
-                    h, m = tm.split(":")
-                    tm = "%02d:%02d" % (int(h), int(m))
-                except ValueError:
-                    messagebox.showwarning("시간 확인", "시간은 HH:MM 형식으로 적어 주세요. (예: 18:00)", parent=self.win)
-                    return
+            try:
+                tm = parse_time_text(r["time"].get())
+            except ValueError:
+                messagebox.showwarning("시간 확인", "시간은 HH:MM 형식으로 적어 주세요. (예: 18:00)", parent=self.win)
+                return
             new_events.append(make_event(d.isoformat(), tm, r["kind"].get(), r["snippet"], common))
         if not new_events:
             messagebox.showinfo("안내", "달력에 올릴 날짜를 체크해 주세요.", parent=self.win)
@@ -624,7 +651,7 @@ class BatchDialog:
             res = it["res"]
             common = {"title": it["title"], "doc_no": it["docno"], "org": it.get("org", ""),
                       "attachments": res["attachments"], "emails": res["emails"],
-                      "todos": [{"text": t, "done": False} for t in (res.get("todos") or res["requests"])],
+                      "body": it["text"].strip(),
                       "refs": core.find_doc_refs(it["text"], it["docno"])}
             events = [make_event(c["date"].isoformat(), c.get("time", ""), c["kind"], c["snippet"], common) for c in it["picks"]]
             month = doc_month(it.get("info"), res.get("doc_date"))
@@ -997,6 +1024,142 @@ class Toast:
 
 
 # ══════════════════════════════════════════════════════════════
+#  일정 설정 / 메모 창 (일정을 더블클릭하거나, 날짜 빈 곳을 더블클릭하면 열린다)
+#    달력에 보일 글자 · 날짜 · 시간 · 구분 · 색깔 · 메모 · 완료(가운데 줄)
+# ══════════════════════════════════════════════════════════════
+class EventDialog:
+    def __init__(self, app, ev=None, day=None):
+        self.app, self.ev = app, ev
+        new = ev is None
+        is_memo = new or ev.get("kind") == "메모"
+        day = day or (dt.date.fromisoformat(ev["date"]) if ev else dt.date.today())
+        win = self.win = tk.Toplevel(app.root)
+        win.title("메모 추가" if new else "일정 설정")
+        win.configure(bg=BG)
+        win.resizable(False, False)
+        if app.root.winfo_viewable():
+            win.transient(app.root)
+        box = ttk.Frame(win, padding=18)
+        box.pack(fill="both", expand=True)
+
+        if new:
+            head = "📝 %d월 %d일 (%s) 메모 · 일정 추가" % (day.month, day.day, "월화수목금토일"[day.weekday()])
+        else:
+            head = ("📝 메모" if is_memo else "📄 공문 일정") + "  ·  " + ev["title"]
+        ttk.Label(box, text=head, style="Head.TLabel", wraplength=520, justify="left").grid(
+            row=0, column=0, columnspan=6, sticky="w", pady=(0, 12))
+
+        self.label_var = tk.StringVar(value="" if new else ev_label(ev))
+        self.date_var = tk.StringVar(value=day.isoformat())
+        self.time_var = tk.StringVar(value="" if new else ev.get("time", ""))
+        self.kind_var = tk.StringVar(value="메모" if new else ev.get("kind", "기한"))
+        self.color = (ev or {}).get("color", "초록" if new else "")
+        self.done_var = tk.BooleanVar(value=bool((ev or {}).get("done")))
+
+        ttk.Label(box, text="달력에 보일 글자").grid(row=1, column=0, sticky="w")
+        ent = ttk.Entry(box, textvariable=self.label_var, width=46, font=(FONT, 11))
+        ent.grid(row=1, column=1, columnspan=5, sticky="we", padx=(8, 0), pady=3)
+        ttk.Label(box, text="날짜").grid(row=2, column=0, sticky="w")
+        ttk.Entry(box, textvariable=self.date_var, width=12).grid(row=2, column=1, sticky="w", padx=(8, 0), pady=3)
+        ttk.Label(box, text="시간").grid(row=2, column=2, sticky="e", padx=(10, 4))
+        ttk.Entry(box, textvariable=self.time_var, width=7).grid(row=2, column=3, sticky="w")
+        ttk.Label(box, text="구분").grid(row=2, column=4, sticky="e", padx=(10, 4))
+        ttk.Combobox(box, textvariable=self.kind_var, values=KINDS, width=7, state="readonly").grid(row=2, column=5, sticky="w")
+
+        ttk.Label(box, text="색깔").grid(row=3, column=0, sticky="nw", pady=(8, 0))
+        sw = ttk.Frame(box)
+        sw.grid(row=3, column=1, columnspan=5, sticky="w", padx=(8, 0), pady=(8, 0))
+        self.swatches = {}
+        for i, name in enumerate(COLOR_NAMES):
+            bg, fg = EVENT_COLORS.get(name, ("#ffffff", SUB))
+            lb = tk.Label(sw, text=name, bg=bg, fg=fg, font=(FONT, 9, "bold"), width=5, pady=3, cursor="hand2",
+                          highlightthickness=2, highlightbackground=BG)
+            lb.grid(row=i // 9, column=i % 9, padx=2, pady=2)
+            lb.bind("<Button-1>", lambda e, n=name: self.pick_color(n))
+            self.swatches[name] = lb
+        ttk.Label(box, text="자동 = 기한이 가까우면 노랑, 지나면 빨강", style="Sub.TLabel").grid(
+            row=4, column=1, columnspan=5, sticky="w", padx=(8, 0))
+        self.pick_color(self.color or "자동")
+
+        ttk.Label(box, text="메모").grid(row=5, column=0, sticky="nw", pady=(10, 0))
+        self.memo = tk.Text(box, width=52, height=5, wrap="word", font=(FONT, 10), relief="flat", bg="#fbfcfe",
+                            highlightthickness=1, highlightbackground=BORDER, highlightcolor=PRIMARY, padx=6, pady=4)
+        self.memo.grid(row=5, column=1, columnspan=5, sticky="we", padx=(8, 0), pady=(10, 0))
+        self.memo.insert("1.0", (ev or {}).get("memo", ""))
+
+        done = tk.Frame(box, bg="#eef7f0" if self.done_var.get() else "#f6f7f9", padx=10, pady=6)
+        done.grid(row=6, column=0, columnspan=6, sticky="we", pady=(12, 0))
+        self.done_cb = tk.Checkbutton(done, text="✔ 완료  (달력에 가운데 줄을 긋고, 기한 알림을 멈춥니다)",
+                                      variable=self.done_var, font=(FONT, 10, "bold"), fg=TEXT, bd=0,
+                                      bg=done["bg"], activebackground=done["bg"], highlightthickness=0)
+        self.done_cb.pack(anchor="w")
+        self.done_frame = done
+
+        def recolor(*_):
+            c = "#eef7f0" if self.done_var.get() else "#f6f7f9"
+            self.done_frame.config(bg=c)
+            self.done_cb.config(bg=c, activebackground=c, fg="#1d6b3e" if self.done_var.get() else TEXT)
+        self.done_var.trace_add("write", recolor)
+
+        bar = ttk.Frame(box)
+        bar.grid(row=7, column=0, columnspan=6, sticky="we", pady=(14, 0))
+        ttk.Button(bar, text="저장", style="Accent.TButton", command=self.save).pack(side="right")
+        ttk.Button(bar, text="취소", command=win.destroy).pack(side="right", padx=6)
+        if not new:
+            ttk.Button(bar, text="🗑 삭제", style="Danger.TButton", command=self.delete).pack(side="left")
+            if core.resolve_doc_path(ev):
+                ttk.Button(bar, text="📄 원본 공문 열기", command=lambda: app.open_event_doc(ev)).pack(side="left", padx=6)
+        win.bind("<Escape>", lambda e: win.destroy())
+        win.bind("<Control-Return>", lambda e: self.save())
+        ent.focus_set()
+        ent.select_range(0, "end")
+
+    def pick_color(self, name):
+        self.color = "" if name == "자동" else name
+        for n, lb in self.swatches.items():
+            lb.config(highlightbackground=PRIMARY if n == name else BG)
+
+    def save(self):
+        label = self.label_var.get().strip()
+        if not label:
+            messagebox.showinfo("안내", "달력에 보일 글자를 적어 주세요.", parent=self.win)
+            return
+        try:
+            d = parse_date_text(self.date_var.get())
+            tm = parse_time_text(self.time_var.get())
+        except ValueError:
+            messagebox.showwarning("입력 확인", "날짜는 2026-12-03, 시간은 14:00 처럼 적어 주세요.", parent=self.win)
+            return
+        done = self.done_var.get()
+        fields = {"date": d.isoformat(), "time": tm, "kind": self.kind_var.get(), "color": self.color,
+                  "memo": self.memo.get("1.0", "end").strip(), "done": done}
+        store = self.app.store
+        if self.ev is None:
+            ev = dict(fields, title=label, label="", done_at=d.isoformat() if done else "")
+            store.add(ev)
+            ev_id = ev["id"]
+        else:
+            ev = self.ev
+            fields["label"] = "" if label == ev["title"] else label      # 공문 제목과 같으면 따로 저장 안 함
+            if ev.get("kind") == "메모":
+                fields["title"], fields["label"] = label, ""
+            if done != bool(ev.get("done")):
+                fields["done_at"] = dt.date.today().isoformat() if done else ""
+            store.update(ev["id"], fields)
+            ev_id = ev["id"]
+        self.win.destroy()
+        self.app.pending_select_id = ev_id
+        self.app.go_to(d)
+
+    def delete(self):
+        if messagebox.askyesno("삭제", "이 일정을 삭제할까요?\n%s\n(보관된 공문 파일은 지워지지 않습니다)" % self.ev["title"],
+                               parent=self.win):
+            self.app.store.delete(self.ev["id"])
+            self.win.destroy()
+            self.app.refresh()
+
+
+# ══════════════════════════════════════════════════════════════
 #  업무 처리 현황 창 (했는지 / 안 했는지 한눈에)
 # ══════════════════════════════════════════════════════════════
 class StatusWindow:
@@ -1020,12 +1183,12 @@ class StatusWindow:
         self.sum_var = tk.StringVar()
         ttk.Label(top, textvariable=self.sum_var, font=(FONT, 10, "bold")).pack(side="right")
 
-        cols = ("state", "mine", "kind", "date", "time", "title", "todo", "docno", "done_at")
+        cols = ("state", "mine", "kind", "date", "time", "title", "docno", "done_at")
         frame = ttk.Frame(win)
         frame.pack(fill="both", expand=True, padx=12)
         self.tree = ttk.Treeview(frame, columns=cols, show="headings", height=16)
-        for col, text, width in zip(cols, ["상태", "실적", "구분", "기한일", "시간", "공문 제목", "할 일", "문서번호", "완료일"],
-                                    [100, 40, 60, 95, 55, 420, 55, 140, 90]):
+        for col, text, width in zip(cols, ["상태", "실적", "구분", "기한일", "시간", "공문 제목", "문서번호", "완료일"],
+                                    [100, 40, 60, 95, 55, 470, 140, 90]):
             self.tree.heading(col, text=text)
             self.tree.column(col, width=width, anchor="w", stretch=col == "title")
         sb = ttk.Scrollbar(frame, orient="vertical", command=self.tree.yview)
@@ -1035,7 +1198,7 @@ class StatusWindow:
         self.tree.tag_configure("late", foreground="#a12622")
         self.tree.tag_configure("soon", foreground="#7a5b00")
         self.tree.tag_configure("done", foreground="#8a8f98", font=(FONT, 9, "overstrike"))   # 완료 = 가운데 줄
-        self.tree.bind("<Double-1>", lambda e: self.open_doc())
+        self.tree.bind("<Double-1>", lambda e: self.goto())
         for b in ("<Button-3>", "<Button-2>"):
             self.tree.bind(b, self.on_right_click)
 
@@ -1045,7 +1208,7 @@ class StatusWindow:
         ttk.Button(bar, text="📄 공문 열기", command=self.open_doc).pack(side="left", padx=6)
         ttk.Button(bar, text="📅 달력에서 보기", command=self.goto).pack(side="left")
         ttk.Button(bar, text="📊 엑셀로 저장", command=lambda: app.export_xlsx(parent=self.win)).pack(side="right")
-        ttk.Label(bar, text="(더블클릭 = 공문 열기 · 우클릭 = 메뉴)", style="Sub.TLabel").pack(side="right", padx=10)
+        ttk.Label(bar, text="(더블클릭 = 달력에서 공문 내용 보기 · 우클릭 = 메뉴)", style="Sub.TLabel").pack(side="right", padx=10)
         self.refresh()
 
     def close(self):
@@ -1079,11 +1242,9 @@ class StatusWindow:
                 continue
             if mode == "기한초과" and tag != "late":
                 continue
-            todos = ev.get("todos") or []
-            todo = ("%d/%d" % (sum(1 for t in todos if t.get("done")), len(todos))) if todos else ""
             self.tree.insert("", "end", iid=ev["id"], tags=(tag,) if tag else (),
                              values=(text, "★" if ev.get("mine") else "", ev.get("kind", ""), ev["date"], ev.get("time", ""),
-                                     ev["title"], todo, ev.get("doc_no", ""), ev.get("done_at", "")))
+                                     ev_label(ev), ev.get("doc_no", ""), ev.get("done_at", "")))
 
     def current(self):
         sel = self.tree.selection()
@@ -1410,7 +1571,7 @@ class WidgetWindow:
             row = tk.Frame(self.body, bg=b, cursor="hand2")
             row.pack(fill="x", pady=2)
             tk.Label(row, text=core.dday_text(n), font=(FONT, 9, "bold"), fg=f, bg=b, width=6).pack(side="left")
-            txt = "%s %s%s" % (ev["date"][5:], (ev["time"] + " ") if ev.get("time") else "", ev["title"])
+            txt = "%s %s%s" % (ev["date"][5:], (ev["time"] + " ") if ev.get("time") else "", ev_label(ev))
             tk.Label(row, text=txt, font=(FONT, 9), fg=f, bg=b, anchor="w", justify="left",
                      wraplength=max(120, self.win.winfo_width() - 110)).pack(side="left", fill="x", expand=True, padx=2, pady=2)
             for part in [row] + list(row.winfo_children()):
@@ -1723,9 +1884,13 @@ class DeskCalendar:
                 show = evs if len(evs) <= room else evs[:max(0, room - 1)]
                 for ev in show:
                     n = core.dday(ev["date"], today)
-                    color = (th["done"] if ev.get("done") else th["late"] if n <= 0 and in_m
-                             else th["soon"] if n <= 3 else th["ev"])
-                    text = "• " + ((ev["time"] + " ") if ev.get("time") else "") + ev["title"]
+                    if ev.get("done"):
+                        color = th["done"]
+                    elif ev.get("color") in EVENT_COLORS:
+                        color = DARK_TEXT[ev["color"]] if cfg.get("theme", "dark") == "dark" else EVENT_COLORS[ev["color"]][1]
+                    else:
+                        color = th["late"] if n <= 0 and in_m else th["soon"] if n <= 3 else th["ev"]
+                    text = "• " + ((ev["time"] + " ") if ev.get("time") else "") + ev_label(ev)
                     fnt = f_ev_done if ev.get("done") else f_ev
                     cv.create_text(x0 + 7, ey, text=self.elide(text, fnt, cw - 14), anchor="nw", font=fnt,
                                    fill=color if in_m else th["sub"], tags=tag + ("ev:" + ev["id"],))
@@ -1750,12 +1915,12 @@ class DeskCalendar:
         if ev:
             n = core.dday(ev["date"], dt.date.today())
             state = "완료" if ev.get("done") else core.dday_text(n)
-            self.hover.config(text="%s · %s %s · %s   (더블클릭 = 공문 열기, 우클릭 = 메뉴)" % (
-                state, ev["date"][5:], ev.get("kind", ""), ev["title"]))
+            self.hover.config(text="%s · %s %s · %s   (더블클릭 = 설정·완료, 우클릭 = 메뉴)" % (
+                state, ev["date"][5:], ev.get("kind", ""), ev_label(ev)))
         elif d:
             info = kcal.day_info(d)
             extra = " · ".join(x for x in (info["holiday"], info["term"], ("음력 " + info["lunar"]) if info["lunar"] else "") if x)
-            self.hover.config(text="%d월 %d일 %s   (더블클릭 = 이날 큰 달력에서 보기)" % (d.month, d.day, extra))
+            self.hover.config(text="%d월 %d일 %s   (더블클릭 = 메모 추가)" % (d.month, d.day, extra))
         else:
             self.hover.config(text="")
 
@@ -1768,10 +1933,9 @@ class DeskCalendar:
     def on_double(self, _e):
         d, ev = self._hit()
         if ev:
-            self.app.open_event_doc(ev)
+            EventDialog(self.app, ev)                   # 일정 더블클릭 = 설정 (글자·색·완료)
         elif d:
-            self.app.show_main()
-            self.app.go_to(d)
+            EventDialog(self.app, day=d)                # 날짜 더블클릭 = 메모 추가
 
     def on_right(self, e):
         d, ev = self._hit()
@@ -1853,7 +2017,16 @@ class App:
 
     def __init__(self, widget_only=False):
         self.root = tk.Tk()
-        self.root.title("공문 달력")
+        self.root.title(APP_NAME + " - 공문 달력")
+        self._icon = None
+        try:                                            # 창 아이콘
+            self._icon = tk.PhotoImage(file=resource_path("icon.png"))
+            self.root.iconphoto(True, self._icon)
+            if sys.platform == "win32":
+                self.root.iconbitmap(default=resource_path("icon.ico"))
+        except (tk.TclError, OSError):
+            pass
+        self._body_cache = {}
         self.root.geometry("1240x780")
         self.root.minsize(1000, 640)
         setup_style(self.root)
@@ -1883,7 +2056,7 @@ class App:
         self.build_statusbar()
         self.build_body()
         self.refresh()
-        author_credit.add_author_credit(self.root, app_name="공문 달력", bg=STATUS_BG)
+        author_credit.add_author_credit(self.root, app_name=APP_NAME, bg=STATUS_BG)
         gs.enable_file_drop(self.root, self.on_drop)
         self.root.protocol("WM_DELETE_WINDOW", self.on_close_main)
         self.root.bind("<Control-n>", lambda e: self.open_add_dialog())
@@ -1904,7 +2077,11 @@ class App:
     def build_header(self):
         head = tk.Frame(self.root, bg=PRIMARY_DARK)
         head.pack(fill="x")
-        tk.Label(head, text="📅 공문 달력", font=(FONT, 14, "bold"), fg="#ffffff", bg=PRIMARY_DARK).pack(side="left", padx=(16, 24), pady=9)
+        if self._icon is not None:
+            self._icon_small = self._icon.subsample(8)  # 256 -> 32px
+            tk.Label(head, image=self._icon_small, bg=PRIMARY_DARK).pack(side="left", padx=(14, 0), pady=6)
+        tk.Label(head, text=APP_NAME, font=(FONT, 15, "bold"), fg="#ffffff", bg=PRIMARY_DARK).pack(side="left", padx=(8, 2), pady=9)
+        tk.Label(head, text="공문 달력", font=(FONT, 9), fg="#bcd0ff", bg=PRIMARY_DARK).pack(side="left", padx=(0, 22), pady=(14, 9))
 
         nav = tk.Frame(head, bg=PRIMARY_DARK)
         nav.pack(side="left")
@@ -1987,7 +2164,7 @@ class App:
             lb.bind("<Enter>", lambda e, w=lb: w.config(fg=PRIMARY_DARK))
             lb.bind("<Leave>", lambda e, w=lb: w.config(fg=SUB))
             self.status_items[key] = lb
-        self.tip_lb = tk.Label(bar, text="일정 한 번 클릭 = 선택 · 더블클릭 = 공문 열기 · 우클릭 = 메뉴 · Ctrl+N 공문 추가",
+        self.tip_lb = tk.Label(bar, text="일정 클릭 = 공문 내용 · 일정 더블클릭 = 설정·완료 · 날짜 더블클릭 = 메모 · 우클릭 = 메뉴",
                                bg=STATUS_BG, fg="#9aa0aa", font=(FONT, 9))
         self.tip_lb.pack(side="right", padx=(0, 110))
 
@@ -2007,7 +2184,7 @@ class App:
         body = ttk.Frame(self.root)
         body.pack(fill="both", expand=True, padx=12, pady=10)
 
-        side = ttk.Frame(body, width=380)               # 오른쪽 패널을 먼저 놓아야 달력이 남은 자리를 채운다
+        side = ttk.Frame(body, width=430)               # 오른쪽 패널을 먼저 놓아야 달력이 남은 자리를 채운다
         side.pack(side="right", fill="y", padx=(12, 0))
         side.pack_propagate(False)
         card = tk.Frame(body, bg=CARD, highlightthickness=1, highlightbackground=BORDER)
@@ -2018,33 +2195,50 @@ class App:
         self.nb = ttk.Notebook(side)
         self.nb.pack(fill="both", expand=True)
 
-        # [선택한 날] 탭
+        # [선택한 날] 탭: 그날 일정 목록 → 처리/미처리 → 공문 내용(크게) → 관련 공문(작게)
         t1 = ttk.Frame(self.nb, padding=10)
         self.nb.add(t1, text=" 📌 선택한 날 ")
         ttk.Label(t1, textvariable=self.sel_var, style="Head.TLabel").pack(anchor="w")
-        self.day_list = listbox(t1, height=5)
-        self.day_list.pack(fill="x", pady=(6, 4))
+        self.day_list = listbox(t1, height=4)
+        self.day_list.pack(fill="x", pady=(6, 6))
         self.day_list.bind("<<ListboxSelect>>", lambda e: self.show_detail())
-        self.day_list.bind("<Double-1>", lambda e: self.open_source())
+        self.day_list.bind("<Double-1>", lambda e: self.edit_current())
         for b in ("<Button-3>", "<Button-2>"):          # 우클릭 (윈도우=Button-3, 맥=Button-2)
             self.day_list.bind(b, self.popup_from_list)
-        btns = ttk.Frame(t1)
-        btns.pack(fill="x", pady=(0, 6))
-        ttk.Button(btns, text="✔ 완료", command=self.toggle_done).pack(side="left")
-        ttk.Button(btns, text="📄 공문 열기", command=self.open_source).pack(side="left", padx=4)
-        ttk.Button(btns, text="★ 실적", command=self.toggle_mine_current).pack(side="left")
-        ttk.Button(btns, text="🗑", width=3, style="Danger.TButton", command=self.delete_event).pack(side="right")
 
-        self.detail = tk.Text(t1, height=8, wrap="word", font=(FONT, 9), state="disabled", bg="#fafbfd", relief="flat",
-                              highlightthickness=1, highlightbackground=BORDER, padx=6, pady=4)
-        self.detail.pack(fill="x")
-        ttk.Label(t1, text="☑ 회신 할 일  (누르면 체크)", font=(FONT, 9, "bold")).pack(anchor="w", pady=(8, 2))
-        self.todo_list = listbox(t1, height=4, font=(FONT, 9))
-        self.todo_list.pack(fill="x")
-        self.todo_list.bind("<ButtonRelease-1>", self.on_todo_click)
-        ttk.Label(t1, text="🔗 관련 공문  (더블클릭 = 이동)", font=(FONT, 9, "bold")).pack(anchor="w", pady=(8, 2))
-        self.rel_list = listbox(t1, height=3, font=(FONT, 9))
-        self.rel_list.pack(fill="both", expand=True)
+        row = ttk.Frame(t1)
+        row.pack(fill="x", pady=(0, 6))
+        self.state_var = tk.StringVar(value="")
+        self.seg = []
+        for val, text in (("미처리", "⏳ 미처리"), ("처리", "✔ 처리완료")):
+            b = ttk.Radiobutton(row, text=text, value=val, variable=self.state_var, style="Seg.Toolbutton",
+                                command=self.on_state_change)
+            b.pack(side="left", padx=(0, 2))
+            self.seg.append(b)
+        ttk.Button(row, text="🗑", width=3, style="Danger.TButton", command=self.delete_event).pack(side="right")
+        ttk.Button(row, text="📄 원본", command=self.open_source).pack(side="right", padx=4)
+        ttk.Button(row, text="⚙ 설정", command=self.edit_current).pack(side="right")
+
+        ttk.Label(t1, text="📄 공문 내용", font=(FONT, 9, "bold")).pack(anchor="w")
+        box = ttk.Frame(t1)
+        box.pack(fill="both", expand=True, pady=(2, 6))
+        self.detail = tk.Text(box, wrap="word", font=(FONT, 10), state="disabled", bg="#fbfcfe", relief="flat",
+                              highlightthickness=1, highlightbackground=BORDER, padx=10, pady=8, spacing1=1, spacing3=2)
+        sb = ttk.Scrollbar(box, orient="vertical", command=self.detail.yview)
+        self.detail.configure(yscrollcommand=sb.set)
+        sb.pack(side="right", fill="y")
+        self.detail.pack(side="left", fill="both", expand=True)
+        self.detail.tag_configure("h", font=(FONT, 12, "bold"), spacing3=6)
+        self.detail.tag_configure("meta", foreground="#4b5563", font=(FONT, 9))
+        self.detail.tag_configure("memo", foreground="#5b3a9c", font=(FONT, 10), lmargin1=6, lmargin2=6)
+        self.detail.tag_configure("sep", foreground="#9aa0aa", font=(FONT, 9), spacing1=8, spacing3=6)
+        self.detail.tag_configure("body", font=(FONT, 10))
+        self.detail.tag_configure("mark", background="#fff1a8")
+        self.detail.tag_configure("hint", foreground="#9aa0aa")
+
+        ttk.Label(t1, text="🔗 관련 공문 (더블클릭 = 이동)", font=(FONT, 8, "bold")).pack(anchor="w")
+        self.rel_list = listbox(t1, height=2, font=(FONT, 8))
+        self.rel_list.pack(fill="x")
         self.rel_list.bind("<Double-1>", self.on_rel_double)
 
         # [임박한 기한] 탭
@@ -2145,20 +2339,21 @@ class App:
         for ev in events[:3]:                           # 칸에는 최대 3개까지만 보여 준다
             b, f = event_colors(ev, self.today)
             mark = ("✔ " if ev.get("done") else "") + ("★ " if ev.get("mine") else "")
-            t = (ev["time"] + " " if ev.get("time") else "") + ev["title"]
+            t = (ev["time"] + " " if ev.get("time") else "") + ev_label(ev)
             font = (FONT, 8, "overstrike") if ev.get("done") else (FONT, 8)      # 완료되면 가운데 줄
             lb = tk.Label(cell, text=mark + t, font=font, bg=b, fg=f, anchor="w", padx=3, cursor="hand2")
             lb.pack(fill="x", padx=3, pady=1)
             lb.bind("<Button-1>", lambda e, d=day, ev=ev: self.on_event_click(d, ev))          # 한 번 클릭 = 선택
-            lb.bind("<Double-1>", lambda e, ev=ev: self.on_event_double(ev))                  # 더블클릭 = 공문 열기
+            lb.bind("<Double-1>", lambda e, ev=ev: self.on_event_double(ev))                  # 더블클릭 = 설정·완료
             for b3 in ("<Button-3>", "<Button-2>"):                                           # 우클릭 = 메뉴
                 lb.bind(b3, lambda e, ev=ev: self.popup_menu(e.x_root, e.y_root, ev))
         if len(events) > 3:
             more = tk.Label(cell, text="+%d건 더" % (len(events) - 3), font=(FONT, 8), fg=SUB, bg=bg, anchor="w")
             more.pack(fill="x", padx=4)
             widgets.append(more)
-        for w in widgets:                               # 빈 곳을 누르면 그날만 선택, 더블클릭 = 그날로 공문 추가
+        for w in widgets:                               # 빈 곳: 한 번 = 그날 선택, 두 번 = 메모 추가
             w.bind("<Button-1>", lambda e, d=day: self.select(d))
+            w.bind("<Double-1>", lambda e, d=day: EventDialog(self, day=d))
 
     # ---- 오른쪽 패널 -----------------------------------------------------
     def refresh_side(self):
@@ -2170,7 +2365,7 @@ class App:
         self.day_list.delete(0, "end")
         for ev in self.day_events:
             mark = ("✔ " if ev.get("done") else "") + ("★ " if ev.get("mine") else "")
-            line = "%s [%s] %s" % (ev.get("time") or "종일", ev.get("kind", ""), ev["title"])
+            line = "%s [%s] %s" % (ev.get("time") or "종일", ev.get("kind", ""), ev_label(ev))
             self.day_list.insert("end", mark + (strike(line) if ev.get("done") else line))
         if self.day_events:
             idx = 0
@@ -2185,7 +2380,7 @@ class App:
         self.soon_list.delete(0, "end")
         for ev in self.soon_events:
             n = core.dday(ev["date"], self.today)
-            self.soon_list.insert("end", " %-6s  %s  %s" % (core.dday_text(n), ev["date"][5:], ev["title"]))
+            self.soon_list.insert("end", " %-6s  %s  %s" % (core.dday_text(n), ev["date"][5:], ev_label(ev)))
             if n <= 0:
                 self.soon_list.itemconfig("end", fg="#a12622")
             elif n <= 3:
@@ -2200,59 +2395,87 @@ class App:
         return None
 
     def show_detail(self):
+        """오른쪽 '공문 내용' 칸: 요약 몇 줄 + 공문 본문 전체 (기한 날짜는 노랗게 표시)"""
         ev = self.current_event()
-        lines = []
-        if ev:
-            lines.append("제목: " + ev["title"])
-            lines.append("일시: %s %s  (%s)" % (ev["date"], ev.get("time") or "종일", ev.get("kind", "")))
-            n = core.dday(ev["date"], self.today)
-            state = "처리 완료" + ((" (%s)" % ev["done_at"]) if ev.get("done_at") else "") if ev.get("done") else core.dday_text(n) + " · 미처리"
-            lines.append("처리 상태: " + state)
-            lines.append("내 실적: " + ("★ 포함" if ev.get("mine") else "아니오") + (("  · 메모: " + ev["note"]) if ev.get("note") else ""))
-            if ev.get("doc_no") or ev.get("org"):
-                lines.append("문서번호: %s%s" % (ev.get("doc_no", ""), ("  · 시행: " + ev["org"]) if ev.get("org") else ""))
-            lines.append("저장된 공문: " + (os.path.basename(core.resolve_doc_path(ev) or "") or "없음"))
-            if ev.get("attachments"):
-                lines.append("붙임: " + " / ".join(ev["attachments"]))
-            if ev.get("emails"):
-                lines.append("메일: " + ", ".join(ev["emails"]))
-            if ev.get("snippet"):
-                lines.append("공문 속 문구: " + ev["snippet"])
+        t = self.detail
+        t.config(state="normal")
+        t.delete("1.0", "end")
+        self.state_var.set("처리" if ev and ev.get("done") else ("미처리" if ev else ""))
+        for b in self.seg:
+            b.state(["!disabled"] if ev else ["disabled"])
+        if not ev:
+            t.insert("end", "이 날짜에는 일정이 없습니다.\n\n", "hint")
+            t.insert("end", "· 날짜 칸을 더블클릭하면 메모를 적을 수 있어요.\n· [＋ 공문 추가]를 누르거나 공문 PDF를 창에 끌어다 놓으세요.", "hint")
         else:
-            lines.append("이 날짜에는 일정이 없습니다.\n\n[＋ 공문 추가]를 누르거나, 공문 PDF를 이 창에 끌어다 놓으세요.")
-        self.detail.config(state="normal")
-        self.detail.delete("1.0", "end")
-        self.detail.insert("1.0", "\n".join(lines))
-        self.detail.config(state="disabled")
-
-        self.todo_list.delete(0, "end")
-        todos = (ev or {}).get("todos") or []
-        for t in todos:
-            self.todo_list.insert("end", ("☑ " + strike(t["text"])) if t.get("done") else ("☐ " + t["text"]))
-            if t.get("done"):
-                self.todo_list.itemconfig("end", fg="#8a8f98")
-        if ev and not todos:
-            self.todo_list.insert("end", "  (할 일 없음)")
-            self.todo_list.itemconfig("end", fg="#9aa0aa")
+            d = dt.date.fromisoformat(ev["date"])
+            n = core.dday(ev["date"], self.today)
+            t.insert("end", ev["title"] + "\n", "h")
+            state = ("처리 완료" + ((" (%s)" % ev["done_at"]) if ev.get("done_at") else "")) if ev.get("done") else core.dday_text(n)
+            t.insert("end", "📅 %d. %d. %d.(%s) %s · %s · %s\n" % (d.year, d.month, d.day, "월화수목금토일"[d.weekday()],
+                                                                 ev.get("time") or "종일", ev.get("kind", ""), state), "meta")
+            if ev.get("doc_no") or ev.get("org"):
+                t.insert("end", "🏢 %s%s\n" % (ev.get("doc_no", ""), ("  · 시행 " + ev["org"]) if ev.get("org") else ""), "meta")
+            if ev.get("attachments"):
+                t.insert("end", "📎 " + " / ".join(ev["attachments"]) + "\n", "meta")
+            if ev.get("mine") or ev.get("note"):
+                t.insert("end", "★ 내 실적" + ((" · " + ev["note"]) if ev.get("note") else "") + "\n", "meta")
+            if ev.get("memo"):
+                t.insert("end", "\n📝 " + ev["memo"] + "\n", "memo")
+            if ev.get("kind") != "메모":
+                body = self.doc_body(ev)
+                t.insert("end", "──────── 공문 내용 ────────\n", "sep")
+                if body:
+                    start = t.index("end-1c")
+                    t.insert("end", body.strip() + "\n", "body")
+                    self._mark_date(start, d)
+                else:
+                    t.insert("end", "(저장된 공문 내용이 없습니다. [📄 원본]으로 여세요)\n", "hint")
+        t.config(state="disabled")
+        t.yview_moveto(0)
 
         self.rel_events = core.related_events(self.store.events, ev) if ev else []
         self.rel_list.delete(0, "end")
         for e in self.rel_events:
-            self.rel_list.insert("end", "%s  %s  %s" % (e["date"][5:], e.get("doc_no", ""), e["title"]))
+            self.rel_list.insert("end", "%s  %s  %s" % (e["date"][5:], e.get("doc_no", ""), ev_label(e)))
         if ev and not self.rel_events:
             refs = ev.get("refs") or []
             self.rel_list.insert("end", ("  (달력에 없음: " + ", ".join(refs[:3]) + ")") if refs else "  (관련 공문 없음)")
             self.rel_list.itemconfig("end", fg="#9aa0aa")
 
-    def on_todo_click(self, e):
+    def doc_body(self, ev):
+        """공문 본문 글자. 예전에 올린 일정은 보관된 공문 파일에서 읽어 온다 (한 번 읽으면 기억)."""
+        if ev.get("body"):
+            return ev["body"]
+        path = core.resolve_doc_path(ev)
+        if not path:
+            return ""
+        if path not in self._body_cache:
+            try:
+                self._body_cache[path] = core.read_file_text(path)
+            except Exception:
+                self._body_cache[path] = ""
+        return self._body_cache[path]
+
+    def _mark_date(self, start, d):
+        """본문에서 그 일정 날짜('12. 3.', '12월 3일', '2026-12-03')를 노랗게 칠한다"""
+        pats = [r"%d\s*\.\s*%d\s*\.(?!\d)" % (d.month, d.day), r"%d\s*월\s*%d\s*일" % (d.month, d.day),
+                r"%d-%02d-%02d" % (d.year, d.month, d.day), r"(?<![\d/])%d/%d(?![\d/])" % (d.month, d.day)]
+        text = self.detail.get(start, "end")
+        for pat in pats:
+            for m in re.finditer(pat, text):
+                self.detail.tag_add("mark", "%s+%dc" % (start, m.start()), "%s+%dc" % (start, m.end()))
+
+    def on_state_change(self):
         ev = self.current_event()
-        if not ev or not ev.get("todos"):
-            return
-        i = self.todo_list.nearest(e.y)
-        if 0 <= i < len(ev["todos"]):
-            self.pending_select_id = ev["id"]
-            self.store.toggle_todo(ev["id"], i)
-            self.refresh()
+        if ev and (self.state_var.get() == "처리") != bool(ev.get("done")):
+            self.set_done_toggle(ev)
+
+    def edit_current(self):
+        ev = self.current_event()
+        if ev:
+            EventDialog(self, ev)
+        else:
+            EventDialog(self, day=self.selected)
 
     def on_rel_double(self, e):
         i = self.rel_list.nearest(e.y)
@@ -2306,18 +2529,21 @@ class App:
         self._click_job = self.root.after(250, later)
 
     def on_event_double(self, ev):
-        """일정을 더블클릭하면 저장된 공문을 연다"""
+        """일정을 더블클릭하면 설정 창(달력 글자 · 색 · 완료 · 메모)을 연다"""
         if self._click_job:
             self.root.after_cancel(self._click_job)
             self._click_job = None
-        self.open_event_doc(ev)
+        self.pending_select_id = ev["id"]
+        self.select(dt.date.fromisoformat(ev["date"]))
+        EventDialog(self, ev)
 
     # ---- 우클릭 메뉴 -------------------------------------------------------
     def popup_menu(self, x, y, ev):
         m = self.menu
         m.delete(0, "end")
-        m.add_command(label="📄 공문 열기", command=lambda: self.open_event_doc(ev))
-        m.add_command(label="📅 달력에서 보기", command=lambda: self.show_event(ev))
+        m.add_command(label="⚙ 설정 (글자 · 색 · 완료 · 메모)…", command=lambda: EventDialog(self, ev))
+        m.add_command(label="📅 공문 내용 보기", command=lambda: self.show_event(ev))
+        m.add_command(label="📄 원본 공문 열기", command=lambda: self.open_event_doc(ev))
         m.add_separator()
         m.add_command(label="↩ 완료 취소" if ev.get("done") else "✔ 완료했음 (가운데 줄)", command=lambda: self.set_done_toggle(ev))
         m.add_command(label="☆ 내 실적에서 빼기" if ev.get("mine") else "★ 내 실적에 넣기 (자기역량기술서)", command=lambda: self.set_mine_toggle(ev))
@@ -2570,11 +2796,11 @@ class App:
         names = {"D-3": "3일 남음", "D-1": "내일까지", "D-day": "오늘까지", "지남": "기한 지남"}
         if len(items) <= 3:
             for ev, lv in items:
-                body = "%s\n%s %s · %s" % (ev["title"], ev["date"], ev.get("time") or "", ev.get("kind", ""))
+                body = "%s\n%s %s · %s" % (ev_label(ev), ev["date"], ev.get("time") or "", ev.get("kind", ""))
                 Toast(self, "⏰ %s (%s)" % (names[lv], lv if lv != "지남" else core.dday_text(core.dday(ev["date"], self.today))),
                       body, color=colors[lv], on_open=lambda ev=ev: self.show_event(ev))
         else:
-            body = "\n".join("· %s %s" % (lv, ev["title"][:28]) for ev, lv in items[:4])
+            body = "\n".join("· %s %s" % (lv, ev_label(ev)[:28]) for ev, lv in items[:4])
             if len(items) > 4:
                 body += "\n· 외 %d건" % (len(items) - 4)
             Toast(self, "⏰ 기한 알림 %d건" % len(items), body, color="#c0392b",
@@ -2607,7 +2833,8 @@ def selftest():
         app.root.update()
         out.append("widgets ok (desktop pinned=%s)" % app.deskcal.pinned)
         for make in (lambda: AddDialog(app), lambda: BatchDialog(app), lambda: SettingsDialog(app, "widget"),
-                     lambda: StatusWindow(app), lambda: SearchWindow(app, "시험")):
+                     lambda: StatusWindow(app), lambda: SearchWindow(app, "시험"),
+                     lambda: EventDialog(app, day=dt.date.today())):
             w = make()
             app.root.update()
             w.win.destroy()

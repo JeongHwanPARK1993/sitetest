@@ -1,4 +1,4 @@
-name: 공문달력 exe 만들기
+name: 공문비서 exe 만들기
 
 on:
   push:
@@ -37,6 +37,7 @@ jobs:
         working-directory: 공문달력ver/달력
         run: >
           pyinstaller --noconfirm --onedir --windowed --name GongmunCalendar
+          --icon icon.ico --add-data "icon.png;." --add-data "icon.ico;."
           --hidden-import gongmun_xlsx --hidden-import gongmun_pdf --hidden-import gongmun_system
           --hidden-import gongmun_rename --hidden-import gongmun_kcal
           --exclude-module ssl --exclude-module _ssl --exclude-module _hashlib
@@ -52,10 +53,10 @@ jobs:
         run: |
           import os, shutil, subprocess, sys
           dist = os.path.join("공문달력ver", "달력", "dist", "GongmunCalendar")
-          os.replace(os.path.join(dist, "GongmunCalendar.exe"), os.path.join(dist, "공문달력.exe"))
+          os.replace(os.path.join(dist, "GongmunCalendar.exe"), os.path.join(dist, "공문비서.exe"))
           test = os.path.join(os.environ["RUNNER_TEMP"], "selftest_app")
           shutil.copytree(dist, test)
-          subprocess.run([os.path.join(test, "공문달력.exe"), "--selftest"], timeout=300)
+          subprocess.run([os.path.join(test, "공문비서.exe"), "--selftest"], timeout=300)
           log = open(os.path.join(test, "selftest.log"), encoding="utf-8").read()
           print(log)
           if not log.rstrip().endswith("OK"):
@@ -67,19 +68,19 @@ jobs:
           import os, zipfile
           dist = os.path.join("공문달력ver", "달력", "dist", "GongmunCalendar")
           os.makedirs(os.path.join("공문달력ver", "배포"), exist_ok=True)
-          out = os.path.join("공문달력ver", "배포", "공문달력.zip")
+          out = os.path.join("공문달력ver", "배포", "공문비서.zip")
           with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as z:
               for root, _, files in os.walk(dist):
                   for f in files:
                       full = os.path.join(root, f)
-                      z.write(full, os.path.join("공문달력", os.path.relpath(full, dist)))
-              z.write(os.path.join("공문달력ver", "사용설명.txt"), "공문달력/사용설명.txt")
+                      z.write(full, os.path.join("공문비서", os.path.relpath(full, dist)))
+              z.write(os.path.join("공문달력ver", "사용설명.txt"), "공문비서/사용설명.txt")
           print(out, os.path.getsize(out))
 
       - uses: actions/upload-artifact@v4
         with:
-          name: 공문달력
-          path: 공문달력ver/배포/공문달력.zip
+          name: 공문비서
+          path: 공문달력ver/배포/공문비서.zip
 
       - name: Commit zip
         shell: bash
@@ -87,7 +88,7 @@ jobs:
           git config core.quotepath false
           git config user.name "github-actions[bot]"
           git config user.email "41898277+github-actions[bot]@users.noreply.github.com"
-          git add 공문달력ver/배포/공문달력.zip
-          git commit -m "공문달력 exe 빌드 결과 (자동)" || exit 0
+          git add 공문달력ver/배포/공문비서.zip
+          git commit -m "공문비서 exe 빌드 결과 (자동)" || exit 0
           git pull --rebase origin "${GITHUB_REF_NAME}"
           git push origin "HEAD:${GITHUB_REF_NAME}"

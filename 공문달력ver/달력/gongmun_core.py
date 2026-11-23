@@ -702,7 +702,7 @@ def analyze(text, lex=None, today=None):
             break
     return {
         "title": _find_title(lines), "doc_no": doc_no, "doc_date": doc_date,
-        "attachments": _find_attachments(lines), "requests": _find_requests(lines), "todos": find_todos(text),
+        "attachments": _find_attachments(lines), "requests": _find_requests(lines),
         "emails": list(dict.fromkeys(EMAIL_RE.findall(text))), "candidates": candidates,
     }
 
@@ -899,23 +899,9 @@ class Store:
         """내가 한 역할·성과 메모"""
         self._edit(ev_id, lambda e: e.__setitem__("note", note))
 
-    def toggle_todo(self, ev_id, idx):
-        """회신 할 일 체크리스트의 한 줄을 했음/안 했음으로 바꾼다.
-        한 공문에서 날짜가 여러 개 올라갔으면(같은 group) 모두 같이 바뀐다."""
-        ev = self.get(ev_id)
-        todos = (ev or {}).get("todos") or []
-        if not (0 <= idx < len(todos)):
-            return
-        new = not todos[idx].get("done")
-        group = ev.get("group")
-        now = self._now()
-        for e in self.events:
-            if e is ev or (group and e.get("group") == group):
-                ts = e.get("todos") or []
-                if idx < len(ts):
-                    ts[idx]["done"] = new
-                    e["updated"] = now
-        self.save()
+    def update(self, ev_id, fields):
+        """설정 창에서 고친 값(글자 · 색 · 날짜 · 완료 · 메모 ...)을 한꺼번에 저장"""
+        self._edit(ev_id, lambda e: e.update(fields))
 
     def group_by_date(self):
         """{날짜: [일정...]}  (내용이 바뀌지 않았으면 지난번 결과를 그대로 쓴다)"""
@@ -1130,30 +1116,6 @@ def find_doc_refs(text, own_no=""):
     return res[:10]
 
 
-_TODO_WORDS = ("제출", "회신", "보고", "송부", "신청", "참석", "작성", "추천", "통보", "첨부", "입실", "안내", "협조", "참여", "등록")
-_TODO_START = re.compile(r"(?:다\.|하오니,?|하니,?|드리니,?|바랍니다\.|아울러,?|※|\s\d{1,2}\.(?!\s*\d)|\s[가-하]\.)\s")
-
-
-def find_todos(text, limit=5):
-    """'~제출하여 주시기 바랍니다.' 같은 요청 문장을 '회신 할 일' 로 뽑는다.
-    PDF 에서 줄이 꺾여도 문장 전체를 잇고, '~하오니' 앞의 설명은 떼어 낸다."""
-    flat = re.sub(r"\s+", " ", text or "")
-    out = []
-    for m in re.finditer(r"(?:주시기|하시기)\s?바랍니다\.?|바람\.", flat):
-        chunk = flat[max(0, m.start() - 220):m.end()]
-        starts = [x.end() for x in _TODO_START.finditer(chunk[:-len(m.group(0))])]
-        sent = chunk[starts[-1]:] if starts else chunk
-        if len(sent) < 25 and len(starts) > 1:          # '협조하여 주시기 바랍니다.' 처럼 너무 짧으면 앞 구절까지
-            sent = chunk[starts[-2]:]
-        sent = re.sub(r"^(?:\d{1,2}\.|[가-하]\.|아울러,?)\s*", "", sent.strip())
-        if len(sent) > 150:
-            sent = "…" + sent[-149:]
-        if any(w in _strip_ws(sent) for w in _TODO_WORDS) and sent not in out:
-            out.append(sent)
-        if len(out) >= limit:
-            break
-    return out
-
 
 def related_events(events, ev):
     """ev 와 문서번호로 이어진 다른 공문 일정들 (같은 공문의 다른 날짜는 뺀다)"""
@@ -1204,7 +1166,7 @@ def search_events(events, query):
         return []
     out = []
     for e in events:
-        hay = _strip_ws(" ".join([e.get("title", ""), e.get("doc_no", ""), e.get("org", ""), e.get("note", ""),
+        hay = _strip_ws(" ".join([e.get("title", ""), e.get("label", ""), e.get("memo", ""), e.get("doc_no", ""), e.get("org", ""), e.get("note", ""),
                                    e.get("snippet", ""), " ".join(e.get("attachments") or []),
                                    " ".join(e.get("refs") or []), e.get("date", "")]))
         if all(_strip_ws(w) in hay for w in words):
@@ -1218,11 +1180,10 @@ def search_events(events, query):
 def export_xlsx(events, path, today=None):
     import gongmun_xlsx
     today = today or dt.date.today()
-    headers = ["상태", "D-day", "구분", "날짜", "시간", "공문 제목", "문서번호", "시행기관", "완료일", "할 일", "붙임", "내 메모"]
+    headers = ["상태", "D-day", "구분", "날짜", "시간", "공문 제목", "문서번호", "시행기관", "완료일", "붙임", "메모", "내 실적 메모"]
     rows, styles = [], []
     for e in sorted(events, key=lambda e: (e["date"], e.get("time") or "")):
         n = dday(e["date"], today)
-        todos = e.get("todos") or []
         if e.get("done"):
             state, st = "완료", "done"
         elif n < 0:
@@ -1233,8 +1194,7 @@ def export_xlsx(events, path, today=None):
             state, st = "미처리", ""
         rows.append([state, "" if e.get("done") else dday_text(n), e.get("kind", ""), e["date"], e.get("time", ""),
                      e.get("title", ""), e.get("doc_no", ""), e.get("org", ""), e.get("done_at", ""),
-                     ("%d/%d" % (sum(1 for t in todos if t.get("done")), len(todos))) if todos else "",
-                     " / ".join(e.get("attachments") or []), e.get("note", "")])
+                     " / ".join(e.get("attachments") or []), e.get("memo", ""), e.get("note", "")])
         styles.append(st)
     gongmun_xlsx.write_xlsx(path, "업무처리현황", headers, rows, styles,
-                            widths=[10, 8, 8, 12, 7, 60, 18, 16, 12, 8, 40, 30])
+                            widths=[10, 8, 8, 12, 7, 60, 18, 16, 12, 40, 30, 30])
