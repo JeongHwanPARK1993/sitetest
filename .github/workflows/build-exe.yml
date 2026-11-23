@@ -5,6 +5,7 @@ on:
     branches: [claude/official-calendar-folder-setup-cd0u0p]
     paths:
       - "공문달력ver/달력/**"
+      - "공문달력ver/검증/**"
       - "공문달력ver/사용설명.txt"
       - ".github/workflows/build-exe.yml"
   workflow_dispatch:
@@ -25,6 +26,9 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+
+      - name: 공문 분석 시험 (여러 경우의 수)
+        run: python 공문달력ver/검증/분석시험.py
 
       - name: Install
         run: pip install pyinstaller==6.11.1

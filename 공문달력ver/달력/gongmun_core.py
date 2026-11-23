@@ -78,6 +78,34 @@ DEFAULT_LEXICON_TEXT = """\
 접수기간
 제출기간
 회신기간
+시한
+제출시한
+회신시한
+보고시한
+납부기한
+납기
+납부일
+완료기한
+완료일
+조치기한
+이행기한
+통보기한
+송부기한
+추천기한
+응모기한
+등록기한
+제출마감
+접수마감
+신청마감
+회신마감
+마감일시
+조사기한
+검토기한
+의견제출기한
+회신요청일
+제출요청일
+보고일
+까지제출
 
 [행사용어]
 # 날짜 '앞'에 이런 말이 있으면 -> 행사/교육 일정으로 봅니다
@@ -97,6 +125,60 @@ DEFAULT_LEXICON_TEXT = """\
 실시
 시행일
 회의일시
+회의일
+개최일시
+행사일정
+행사일
+교육일
+교육시간
+시험일
+시험일시
+면접일
+면접일시
+심사일
+심사일시
+발표일
+발표일시
+평가일
+평가일시
+점검일
+점검일시
+시상식
+개강일
+개강
+입교일
+입교
+수료일
+연수일정
+연수기간
+연수일시
+워크숍
+설명회
+간담회
+회의
+행사
+교육
+훈련
+대회
+참석일시
+참석일
+방문일
+방문일시
+출장일
+출장기간
+근무일
+당직일
+휴무일
+소집일
+총회
+세미나
+토론회
+공청회
+예행연습
+리허설
+전달식
+임명식
+감사패
 
 [애매용어]
 # 기한일 수도, 행사일 수도 있는 말 -> '확인 필요'로 보여 줍니다
@@ -120,9 +202,46 @@ DEFAULT_LEXICON_TEXT = """\
 까지
 이내
 마감
+이전
+전까지
+한하여
+기한
+한제출
+한회신
+제출
+회신
+보고
+신청
+송부
+통보
+납부
+완료
+도래
+시까지
+
+[행사뒤말]
+# 날짜 '뒤'에 바로 이런 말이 붙으면 -> 행사로 봅니다  (예: '12. 12.(토) 10:00 입교')
+개최
+입교
+개강
+실시
+개막
+시작
+진행
+열립니다
+개최예정
+예정
+참석
+방문
 """
 
 SECTION_TO_KIND = {"기한용어": "기한", "행사용어": "행사", "애매용어": "애매", "문서날짜용어": "문서"}
+
+# 용어사전.txt 에 [행사뒤말] 이 없는 예전 사전도 쓸 수 있게 기본값을 둔다
+_DEFAULT_AFTER_EVENT = ["개최", "입교", "개강", "실시", "개막", "시작", "진행", "열립니다", "개최예정", "예정", "참석", "방문"]
+
+# 날짜 앞에 이런 말이 붙어 있으면 '12. 9.' 처럼 뒤에 아무것도 없어도 날짜로 본다
+_BARE_DATE_HINT = re.compile(r"(기한|시한|기일|마감일?|일시|일정|기간|일자|날짜|제출일|회신일|시험일|발표일|납기|납부일|완료일|보고일|까지|~|부터|:|및|,|·|와|과|또는|\()$")
 
 
 def _strip_ws(s):
@@ -144,7 +263,7 @@ def load_lexicon(path=None):
         with open(path, "r", encoding="utf-8-sig") as f:
             text = f.read()
 
-    labels, after, section = [], [], None
+    labels, after, after_ev, section = [], [], [], None
     for raw in text.splitlines():
         line = raw.strip()
         if not line or line.startswith("#"):
@@ -157,7 +276,9 @@ def load_lexicon(path=None):
             labels.append((word, SECTION_TO_KIND[section]))
         elif section == "기한뒤말":
             after.append(word)
-    return {"labels": labels, "after": after}
+        elif section == "행사뒤말":
+            after_ev.append(word)
+    return {"labels": labels, "after": after, "after_event": after_ev or _DEFAULT_AFTER_EVENT}
 
 
 # ──────────────────────────────────────────────────────────────
@@ -193,6 +314,8 @@ FULL_RE = re.compile(r"(?<!\d)(?P<y>(?:19|20)\d{2})[.\-/년]\n?(?P<m>\d{1,2})[.\
 SHORT_Y_RE = re.compile(r"['’‘´`](?P<y>\d{2})[.\-/년](?P<m>\d{1,2})[.\-/월](?P<d>\d{1,2})(?:일|\.)?")
 MD_KOR_RE = re.compile(r"(?<!\d)(?P<m>\d{1,2})월(?P<d>\d{1,2})일")
 MD_DOT_RE = re.compile(r"(?<![\d/])(?P<m>\d{1,2})\.(?P<d>\d{1,2})\.?")
+MD_SLASH_RE = re.compile(r"(?<![\d/])(?P<m>\d{1,2})/(?P<d>\d{1,2})(?![\d/])")
+YY_DOT_RE = re.compile(r"(?<![\d])(?P<y>2\d)\.(?P<m>\d{1,2})\.(?P<d>\d{1,2})\.?(?![\d])")
 WEEKDAY_RE = re.compile(r"\([월화수목금토일]\)")
 TIME_RE = re.compile(r"(?P<ap>오전|오후)?(?P<h>\d{1,2})(?:[:](?P<mi>\d{2})|시(?:(?P<mi2>\d{1,2})분)?)")
 
@@ -227,14 +350,23 @@ def _parse_time(c, pos):
     return "%02d:%02d" % (h, mi), m.end()
 
 
-def _match_one_date(c, pos):
+_AFTER_OK = ("까지", "~", "부터", "이내", "이전", "전까지", "한하여", "로연장", "로변경", "로조정", "으로연장", "으로변경", "으로조정",
+             "로수정", "로단축", "로앞당", "로연기", "로미룹", "에서", "마감", "제출", "회신", "접수", "신청")
+
+
+def _match_one_date(c, pos, allow_bare=False):
     """pos 위치에서 날짜 하나(+요일+시간)를 읽는다. 없으면 None."""
-    for rx in (FULL_RE, SHORT_Y_RE, MD_KOR_RE, MD_DOT_RE):
+    for rx in (FULL_RE, SHORT_Y_RE, YY_DOT_RE, MD_KOR_RE, MD_SLASH_RE, MD_DOT_RE):
         m = rx.match(c, pos)
         if not m:
             continue
         gd = m.groupdict()
         end = m.end()
+        if rx is YY_DOT_RE or rx is MD_SLASH_RE:        # '26.12.5.' / '12/10' 은 뒤에 요일·시간·까지가 붙을 때만 날짜로 본다
+            tail = c[_skip_nl(c, end):]
+            if not (WEEKDAY_RE.match(tail) or TIME_RE.match(tail) or tail.startswith(_AFTER_OK)
+                    or _BARE_DATE_HINT.search(c[max(0, pos - 6):pos])):
+                continue
         # '11.25.' 처럼 점으로만 쓴 날짜는 '1.2항' 같은 번호와 헷갈리므로
         # 뒤에 (요일) / 시간 / 까지 / ~ 가 붙을 때만 날짜로 인정한다
         if rx is MD_DOT_RE:
@@ -242,7 +374,10 @@ def _match_one_date(c, pos):
             if re.search(r"\d\.$", before) and not re.search(r"(^|\n)\d{1,2}\.$", before):
                 continue                                # 숫자 나열(1.2.3.)이지만, 줄 맨 앞 번호('2.')는 예외
             tail = c[_skip_nl(c, end):]
-            if not (WEEKDAY_RE.match(tail) or TIME_RE.match(tail) or tail.startswith(("까지", "~", "부터"))):
+            if tail.startswith(")") and c[max(0, pos - 1):pos] == "(":
+                tail = tail[1:]                         # '(12. 2.)까지'
+            if not (WEEKDAY_RE.match(tail) or TIME_RE.match(tail) or tail.startswith(_AFTER_OK)
+                    or _BARE_DATE_HINT.search(c[max(0, pos - 6):pos]) or allow_bare):
                 continue
         month, day = int(gd["m"]), int(gd["d"])
         if not (1 <= month <= 12 and 1 <= day <= 31):
@@ -277,7 +412,7 @@ def _parse_date_group(c, pos):
         e = _skip_nl(c, e + 1)
         linked = True
     if linked and e < len(c):
-        second = _match_one_date(c, e)
+        second = _match_one_date(c, e, allow_bare=True)      # '12. 1. ~ 12. 7.' 처럼 기간의 끝 날짜는 뒤에 아무것도 없어도 인정
         if second:
             group["last"] = second
             group["end"] = second["end"]
@@ -384,6 +519,56 @@ def _nearest_label(window, labels):
     return best
 
 
+_WD = {"월": 0, "화": 1, "수": 2, "목": 3, "금": 4, "토": 5, "일": 6}
+_REL_WEEK = re.compile(r"(?P<w>금주|이번주|금번주|차주|다음주|차차주|다다음주)(?:중)?(?P<d>[월화수목금토일])(?:요일)?")
+_REL_DAY = re.compile(r"(?P<w>금일|오늘|내일|익일|명일|모레|명후일)(?:중|내)?")
+_REL_WITHIN = re.compile(r"(?P<n>\d{1,3})(?P<u>일|주)(?:이내|내에|이내에|안에)")
+_REL_DAYS = {"금일": 0, "오늘": 0, "내일": 1, "익일": 1, "명일": 1, "모레": 2, "명후일": 2}
+_REL_WEEKS = {"금주": 0, "이번주": 0, "금번주": 0, "차주": 1, "다음주": 1, "차차주": 2, "다다음주": 2}
+_DEADLINE_WORDS = ("까지", "이내", "마감", "정오", "이전", "전까지", "중", "내")
+_REQUEST_WORDS = ("접수", "수령", "통보", "공문", "시행", "회신", "제출", "보고", "신청", "송부", "조치", "완료")
+
+
+def _snippet_at(text, idx_map, c_start, c_end):
+    n = len(idx_map)
+    o_s = idx_map[min(c_start, n - 1)]
+    o_e = idx_map[min(c_end, n) - 1] + 1
+    return re.sub(r"\s+", " ", text[max(0, o_s - 25): o_e + 15]).strip()
+
+
+def _relative_candidates(c, idx_map, text, base):
+    """말로 쓴 기한을 날짜로 바꾼다. base = 공문 날짜(없으면 오늘)"""
+    out = []
+    monday = base - dt.timedelta(days=base.weekday())
+    for m in _REL_WEEK.finditer(c):
+        after = c[m.end():m.end() + 6]
+        tm, tend = _parse_time(c, m.end()) if not after.startswith(_DEADLINE_WORDS) else (None, m.end())
+        if not (after.startswith(_DEADLINE_WORDS) or tm):
+            continue                                    # '금주 금요일' 뒤에 까지·시간이 없으면 기한이 아니다
+        d = monday + dt.timedelta(weeks=_REL_WEEKS[m.group("w")], days=_WD[m.group("d")])
+        out.append({"kind": "기한", "date": d, "start_date": d, "end_date": d, "time": "", "label": m.group("w"),
+                    "snippet": _snippet_at(text, idx_map, m.start(), m.end() + 3), "checked": True, "pos": m.start()})
+    for m in _REL_DAY.finditer(c):
+        after = c[m.end():m.end() + 6]
+        if not after.startswith(_DEADLINE_WORDS + ("12", "13", "14", "15", "16", "17", "18")) and m.group(0)[-1] not in "중내":
+            continue
+        d = base + dt.timedelta(days=_REL_DAYS[m.group("w")])
+        out.append({"kind": "기한", "date": d, "start_date": d, "end_date": d, "time": "", "label": m.group("w"),
+                    "snippet": _snippet_at(text, idx_map, m.start(), m.end() + 3), "checked": True, "pos": m.start()})
+    for m in _REL_WITHIN.finditer(c):
+        before = c[max(0, m.start() - 30):m.start()].split("\n")[-1]       # 같은 줄에 요청 말이 있을 때만
+        if not any(w in before for w in _REQUEST_WORDS) and not any(w in c[m.end():m.end() + 8] for w in _REQUEST_WORDS):
+            continue                                    # '3일 이내' 가 기한 설명일 때만
+        n = int(m.group("n")) * (7 if m.group("u") == "주" else 1)
+        if not 1 <= n <= 120:
+            continue
+        d = base + dt.timedelta(days=n)
+        out.append({"kind": "애매", "date": d, "start_date": d, "end_date": d, "time": "", "label": "이내",
+                    "snippet": _snippet_at(text, idx_map, m.start(), m.end()) + "  (공문 날짜 기준으로 계산)",
+                    "checked": False, "pos": m.start()})
+    return out
+
+
 def analyze(text, lex=None, today=None):
     """공문 글자 -> 제목/문서번호/붙임/기한 후보 등을 돌려준다."""
     lex = lex or load_lexicon()
@@ -413,9 +598,25 @@ def analyze(text, lex=None, today=None):
         g["label_kind"] = hit[2] if hit else None
         g["label_word"] = hit[3] if hit else ""
         nxt = _skip_nl(c, g["end"])
+        if c.startswith(")", nxt) and "(" in c[max(0, g["start"] - 2):g["start"]]:
+            nxt += 1                                    # '차주 수요일(12. 2.)까지' 처럼 괄호 안 날짜
+        nxt2 = nxt + 1 if c.startswith(("에", "은", "는", "을", "를", "도"), nxt) else nxt     # '10:00에 개최' 처럼 조사가 끼어도
         g["after_deadline"] = any(c.startswith(w, nxt) for w in lex["after"])
+        g["after_event"] = any(c.startswith(w, nxt2) for w in lex.get("after_event", ()))
         g["after_old"] = c.startswith("에서", nxt)       # '~에서 ~로 변경/연장' 의 앞 날짜
         prev_end = g["end"]
+
+    # 날짜 목록('12. 3., 12. 4. 및 12. 5.')이나 'A에서 B로 변경' 은 앞 날짜의 용어를 이어받는다
+    for i in range(1, len(groups)):
+        g, pg = groups[i], groups[i - 1]
+        between = c[pg["end"]:g["start"]]
+        if pg.get("after_old") and between.startswith("에서") and len(between) <= 4:
+            g["label_kind"] = pg["label_kind"] or "기한"          # 새 기한/새 일정
+            g["after_deadline"] = g["after_deadline"] or g["label_kind"] == "기한"
+            g["inherited_new"] = True
+        elif g["label_kind"] is None and between in (",", "·", "및", "와", "과", "/", "또는", ",및", "과/", "∼", "") and len(between) <= 3 \
+                and pg["label_kind"] in ("기한", "행사"):
+            g["label_kind"], g["label_word"] = pg["label_kind"], pg["label_word"]
 
     # (3) 공문 자체 날짜(시행일 등)를 찾아 '연도 계산 기준'으로 쓴다
     doc_date = None
@@ -452,7 +653,11 @@ def analyze(text, lex=None, today=None):
         kind = g["label_kind"]
         if g["after_deadline"] and kind in (None, "애매", "기한"):
             kind = "기한"                                # '~까지' 가 붙으면 기한
-        if g["after_old"]:
+        if kind in (None, "애매") and g.get("after_event"):
+            kind = "행사"                                # '12. 12.(토) 10:00 입교' 처럼 뒤에 행사 동사가 붙으면 행사
+        if kind is None and l and f is not l:
+            kind = "애매"                                # 용어 없이 '12. 1. ~ 12. 7.' 처럼 기간만 있으면 확인 필요
+        if g["after_old"] and not g.get("inherited_new"):
             kind = "변경전"                              # 연장·변경 전의 옛 날짜 (체크 안 함)
         if kind is None:
             kind = "기타"
@@ -468,7 +673,16 @@ def analyze(text, lex=None, today=None):
         candidates.append({
             "kind": kind, "date": pick, "start_date": start, "end_date": end,
             "time": tm or "", "label": g["label_word"], "snippet": snippet, "checked": kind == "기한",
+            "pos": g["start"],
         })
+
+    # (4-2) '금주 금요일까지', '익일까지', '7일 이내' 처럼 날짜가 아니라 말로 쓴 기한
+    have = {cd["date"] for cd in candidates}
+    for cd in _relative_candidates(c, idx_map, text, base):
+        if cd["date"] not in have:
+            candidates.append(cd)
+            have.add(cd["date"])
+    candidates.sort(key=lambda cd: cd["pos"])
 
     if candidates and not any(cd["checked"] for cd in candidates):
         for cd in candidates:                           # 기한이 하나도 없으면 '애매'를 미리 체크
@@ -917,7 +1131,7 @@ def find_doc_refs(text, own_no=""):
 
 
 _TODO_WORDS = ("제출", "회신", "보고", "송부", "신청", "참석", "작성", "추천", "통보", "첨부", "입실", "안내", "협조", "참여", "등록")
-_TODO_START = re.compile(r"(?:다\.|하오니,?|하니,?|드리니,?|바랍니다\.|아울러,?|※|\s\d{1,2}\.|\s[가-하]\.)\s")
+_TODO_START = re.compile(r"(?:다\.|하오니,?|하니,?|드리니,?|바랍니다\.|아울러,?|※|\s\d{1,2}\.(?!\s*\d)|\s[가-하]\.)\s")
 
 
 def find_todos(text, limit=5):
