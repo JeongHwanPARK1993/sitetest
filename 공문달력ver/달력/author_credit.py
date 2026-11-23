@@ -49,13 +49,14 @@ def add_author_credit(parent, app_name="", bg=None):
         box = ttk.Frame(win, padding=18)
         box.pack(fill="both", expand=True)
         ttk.Label(box, text="만든이: " + AUTHOR, font=(FONT, 12, "bold")).pack(anchor="w")
-        tk.Label(box, text=GREETING, font=(FONT, 10), fg="#2f6fed").pack(anchor="w", pady=(4, 10))
+        ttk.Label(box, text=GREETING, font=(FONT, 10), foreground="#2f6fed").pack(anchor="w", pady=(4, 10))
 
         row = ttk.Frame(box)
         row.pack(fill="x")
         mail_var = tk.StringVar(value=EMAIL)
         entry = ttk.Entry(row, textvariable=mail_var, state="readonly", width=28)   # 읽기 전용, 드래그 선택 가능
         entry.pack(side="left")
+        win.mail_var = mail_var                         # 변수를 붙잡아 둔다 (안 하면 사라져서 칸이 빈칸이 됨)
         copy_btn = ttk.Button(row, text="복사하기")
         copy_btn.pack(side="left", padx=(6, 0))
 

@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-gongmun_calendar.py  -  공문비서 (공문 달력 · 화면 부분)
+gongmun_calendar.py  -  업무보조 달력 (화면 부분)
 
 실행:  python gongmun_calendar.py            (전체 화면)
        python gongmun_calendar.py --widget   (바탕화면 위젯만)
@@ -33,7 +33,7 @@ import gongmun_rename as rn                        # 공문 PDF 에서 제목·�
 import gongmun_kcal as kcal                        # 음력 · 24절기 · 공휴일
 import gongmun_system as gs                        # 파일 끌어놓기 · 윈도우 시작 시 실행 · 폴더 감시 · 바탕화면 고정
 
-APP_NAME = "공문비서"
+APP_NAME = "업무보조 달력"
 FONT = "맑은 고딕"
 KINDS = ["기한", "행사", "메모", "애매", "기타", "변경전"]
 
@@ -2017,7 +2017,7 @@ class App:
 
     def __init__(self, widget_only=False):
         self.root = tk.Tk()
-        self.root.title(APP_NAME + " - 공문 달력")
+        self.root.title(APP_NAME)
         self._icon = None
         try:                                            # 창 아이콘
             self._icon = tk.PhotoImage(file=resource_path("icon.png"))
@@ -2081,7 +2081,7 @@ class App:
             self._icon_small = self._icon.subsample(8)  # 256 -> 32px
             tk.Label(head, image=self._icon_small, bg=PRIMARY_DARK).pack(side="left", padx=(14, 0), pady=6)
         tk.Label(head, text=APP_NAME, font=(FONT, 15, "bold"), fg="#ffffff", bg=PRIMARY_DARK).pack(side="left", padx=(8, 2), pady=9)
-        tk.Label(head, text="공문 달력", font=(FONT, 9), fg="#bcd0ff", bg=PRIMARY_DARK).pack(side="left", padx=(0, 22), pady=(14, 9))
+        tk.Label(head, text="공문 · 일정 관리", font=(FONT, 9), fg="#bcd0ff", bg=PRIMARY_DARK).pack(side="left", padx=(0, 22), pady=(14, 9))
 
         nav = tk.Frame(head, bg=PRIMARY_DARK)
         nav.pack(side="left")
