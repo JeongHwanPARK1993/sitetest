@@ -19,6 +19,7 @@ gongmun_calendar.py  -  업무보조 달력 (화면 부분)
 import calendar
 import datetime as dt
 import os
+import queue
 import re
 import subprocess
 import sys
@@ -2283,6 +2284,8 @@ class App:
         self._click_job = None                          # 단일 클릭/더블 클릭을 구분하기 위한 예약
         self.pending_select_id = None                   # 클릭한 일정을 오른쪽 목록에서 선택해 두기 위함
         self.watcher = None
+        self.tray, self.tray_ok, self._tray_hint_shown = None, False, False
+        self._main_visible = not widget_only
         self._tick = 0
         self.title_var, self.sel_var, self.team_var = tk.StringVar(), tk.StringVar(), tk.StringVar()
 
@@ -2295,12 +2298,15 @@ class App:
         author_credit.add_author_credit(self.root, app_name=APP_NAME, bg=STATUS_BG)
         gs.enable_file_drop(self.root, self.on_drop)
         self.root.protocol("WM_DELETE_WINDOW", self.on_close_main)
+        self.root.bind("<Map>", lambda e: setattr(self, "_main_visible", True) if e.widget is self.root else None)
+        self.root.bind("<Unmap>", lambda e: setattr(self, "_main_visible", False) if e.widget is self.root else None)
         self.root.bind("<Control-n>", lambda e: self.open_add_dialog())
         self.root.bind("<Control-f>", lambda e: self.focus_search())
         self.root.bind("<Left>", lambda e: self.move_month(-1) if e.widget is self.root else None)
         self.root.bind("<Right>", lambda e: self.move_month(1) if e.widget is self.root else None)
 
         self.apply_settings(first=True)
+        self.start_tray()
         self.root.after(2500, self.check_alerts)        # 켜자마자 기한 알림 확인
         self.root.after(3000, self.background_tick)
         if widget_only:                                 # 위젯만 띄우기: 큰 달력 창은 숨겨 둔다
@@ -2529,6 +2535,8 @@ class App:
             cell.config(highlightthickness=2 if sel else 1, highlightbackground=PRIMARY if sel else "#e3e7ee")
 
     def update_team_label(self):
+        if self.tray_ok:
+            self.tray.set_tooltip(self.tray_tooltip())
         team = core.team_for(self.today, self.settings)
         if team:
             self.team_var.set("오늘 근무 %d팀" % team)
@@ -3028,8 +3036,10 @@ class App:
             self.deskcal = None
         else:
             self.widget = None
+        if self.tray_ok:
+            return                                      # 트레이 아이콘이 있으면 계속 살아 있다 (종료는 트레이 메뉴에서)
         if quit_if_alone and self.widget is None and self.deskcal is None and not self.root.winfo_viewable():
-            self.root.destroy()                         # 큰 창이 숨겨진 상태에서 마지막 위젯을 닫으면 프로그램 종료
+            self.root.destroy()                         # 트레이가 없을 때: 큰 창이 숨겨진 상태에서 마지막 위젯을 닫으면 종료
 
     def open_status(self):
         if self.status_win is not None:
@@ -3046,12 +3056,80 @@ class App:
             self.open_batch(files)
 
     def on_close_main(self):
-        """위젯이 떠 있으면 큰 창만 숨기고 위젯은 계속 둔다"""
-        if self.widget is not None or self.deskcal is not None:
+        """트레이 아이콘이 있으면 창만 숨기고 계속 실행한다. 없으면 위젯이 떠 있을 때만 숨긴다."""
+        if self.tray_ok:
+            self.root.withdraw()
+            if not self._tray_hint_shown:
+                self._tray_hint_shown = True
+                Toast(self, "🔽 트레이에서 계속 실행 중이에요",
+                      "작업표시줄 오른쪽 아래 아이콘을 누르면 다시 열려요.\n완전히 끄려면 아이콘 우클릭 > 종료", timeout=7000)
+        elif self.widget is not None or self.deskcal is not None:
             self.root.withdraw()
             Toast(self, "🧩 위젯은 계속 떠 있어요", "큰 달력을 다시 보려면 위젯의 ▣ 를 누르세요.\n위젯을 모두 닫으면 프로그램이 끝납니다.", timeout=6000)
         else:
             self.root.destroy()
+
+    # ---- 트레이 아이콘 (작업표시줄 오른쪽 아래) ----------------------------------
+    def start_tray(self):
+        self.tray = gs.TrayIcon(resource_path("icon.ico"), self.tray_tooltip(), self.tray_menu_items)
+        self.tray_ok = self.tray.start()
+        if self.tray_ok:
+            self.root.after(150, self.poll_tray)
+
+    def tray_tooltip(self):
+        team = core.team_for(dt.date.today(), self.settings)
+        return APP_NAME + ((" · 오늘 근무 %d팀" % team) if team else "")
+
+    def tray_menu_items(self):
+        """오른쪽 클릭 메뉴 (트레이 쓰레드에서 부르므로 화면을 건드리지 않고 상태만 읽는다)"""
+        shown = self._main_visible                      # Tk 를 직접 부르지 않고 미리 적어 둔 값을 쓴다
+        return [("toggle", "📅 업무보조 달력 " + ("숨기기" if shown else "열기"), False), None,
+                ("desk", "달력 위젯 (바탕화면 큰 달력)", self.deskcal is not None),
+                ("list", "목록 위젯 (오늘 근무 · 임박 기한)", self.widget is not None), None,
+                ("add", "＋ 공문 추가", False), ("settings", "⚙ 설정", False), None,
+                ("quit", "✕ 종료", False)]
+
+    def poll_tray(self):
+        try:
+            while True:
+                self.handle_tray(self.tray.commands.get_nowait())
+        except queue.Empty:
+            pass
+        except Exception:
+            pass
+        if self.tray_ok:
+            self.root.after(150, self.poll_tray)
+
+    def handle_tray(self, cmd):
+        if cmd == "toggle":
+            if self.root.state() == "withdrawn" or self.root.state() == "iconic":
+                self.show_main()
+            else:
+                self.root.withdraw()
+        elif cmd in ("desk", "list"):
+            cur = self.deskcal if cmd == "desk" else self.widget
+            if cur is not None:
+                cur.close(quit_if_alone=False)
+            else:
+                self.open_widget(cmd)
+            self.settings.setdefault("widgets", {})[cmd] = cur is None     # 자동 실행 때도 이 상태로 켜지게
+            core.save_settings(self.settings)
+        elif cmd == "add":
+            self.show_main()
+            self.open_add_dialog()
+        elif cmd == "settings":
+            self.show_main()
+            self.open_settings()
+        elif cmd == "quit":
+            self.quit_app()
+
+    def quit_app(self):
+        self.tray_ok = False
+        try:
+            self.tray.stop()
+        except Exception:
+            pass
+        self.root.destroy()
 
     # ---- 설정 적용 -----------------------------------------------------------
     def apply_settings(self, first=False, share_changed=False, desk_changed=False):
@@ -3172,6 +3250,14 @@ def selftest():
         app.open_widget("list")
         app.root.update()
         out.append("widgets ok (desktop pinned=%s)" % app.deskcal.pinned)
+        out.append("tray ok=%s %s" % (app.tray_ok, app.tray.error if app.tray else ""))
+        if app.tray_ok:
+            app.handle_tray("desk"); app.root.update()          # 트레이 메뉴 명령도 눌러 본다
+            app.handle_tray("desk"); app.root.update()
+            app.handle_tray("toggle"); app.handle_tray("toggle"); app.root.update()
+            out.append("tray commands ok, menu=%d items" % len(app.tray_menu_items()))
+            app.tray.stop()
+            app.tray_ok = False
         for make in (lambda: AddDialog(app), lambda: BatchDialog(app), lambda: SettingsDialog(app, "widget"),
                      lambda: StatusWindow(app), lambda: SearchWindow(app, "시험"),
                      lambda: EventDialog(app, day=dt.date.today())):

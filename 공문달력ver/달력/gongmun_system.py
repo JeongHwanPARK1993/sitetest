@@ -9,6 +9,7 @@ gongmun_system.py  -  윈도우와 맞닿는 부분 (화면 그리기와 상관�
 import os
 import queue
 import sys
+import threading
 import time
 
 IS_WIN = sys.platform == "win32"
@@ -255,3 +256,195 @@ def send_to_bottom(win):
         ctypes.windll.user32.SetWindowPos(_hwnd(win), HWND_BOTTOM, 0, 0, 0, 0, SWP_NOSIZE | SWP_NOMOVE | SWP_NOACTIVATE)
     except Exception:
         pass
+
+
+# ──────────────────────────────────────────────────────────────
+# 5. 트레이 아이콘 (작업표시줄 오른쪽 아래 작은 아이콘)
+#    왼쪽 클릭 = 달력 열기/숨기기, 오른쪽 클릭 = 메뉴 (위젯 켜고 끄기, 공문 추가, 설정, 종료)
+#    추가 설치 없이 윈도우 기본 기능(Shell_NotifyIcon)만 쓴다.
+#    윈도우 메시지는 별도 쓰레드에서 받고, 고른 명령은 queue 로 화면 쪽에 넘긴다 (Tk 는 한 쓰레드에서만 써야 해서).
+# ──────────────────────────────────────────────────────────────
+class TrayIcon:
+    WM_TRAY = 0x8001                                    # WM_APP + 1
+    WM_STOP = 0x8002
+    CLICK, DBLCLICK, RCLICK, CONTEXT = 0x202, 0x203, 0x205, 0x7B
+
+    def __init__(self, icon_path, tooltip, menu_items):
+        """menu_items() -> [(명령, 글자, 체크됨), ...]  빈 글자(None)는 구분선. 오른쪽 클릭 때마다 불러서 최신 상태를 보여 준다."""
+        self.icon_path, self.tooltip, self.menu_items = icon_path, tooltip, menu_items
+        self.commands = queue.Queue()                   # 화면 쪽이 꺼내 쓰는 명령들
+        self.ready = threading.Event()
+        self.ok = False
+        self.error = ""
+        self.hwnd = None
+        self._thread = None
+
+    # ---- 시작 / 끝 ----
+    def start(self, timeout=5.0):
+        if not IS_WIN:
+            return False
+        self._thread = threading.Thread(target=self._run, name="tray", daemon=True)
+        self._thread.start()
+        self.ready.wait(timeout)
+        return self.ok
+
+    def stop(self):
+        if self.ok and self.hwnd:
+            try:
+                import ctypes
+                ctypes.windll.user32.PostMessageW(self.hwnd, self.WM_STOP, 0, 0)
+                if self._thread:
+                    self._thread.join(2.0)
+            except Exception:
+                pass
+        self.ok = False
+
+    def set_tooltip(self, text):
+        self.tooltip = text
+        if self.ok:
+            try:
+                self._notify(1)                         # NIM_MODIFY
+            except Exception:
+                pass
+
+    # ---- 윈도우 쪽 ----
+    def _run(self):
+        try:
+            import ctypes
+            from ctypes import wintypes
+            self._ct, self._wt = ctypes, wintypes
+            self._define(ctypes, wintypes)
+            self._create_window()
+            self._notify(0)                             # NIM_ADD
+            self.ok = True
+        except Exception as e:                          # 트레이를 못 만들어도 프로그램은 계속 쓸 수 있다
+            self.error = repr(e)
+            self.ok = False
+            self.ready.set()
+            return
+        self.ready.set()
+        msg = self._wt.MSG()
+        u = self._ct.windll.user32
+        while u.GetMessageW(self._ct.byref(msg), None, 0, 0) > 0:
+            u.TranslateMessage(self._ct.byref(msg))
+            u.DispatchMessageW(self._ct.byref(msg))
+        self.ok = False
+
+    def _define(self, ct, wt):
+        LRESULT = ct.c_ssize_t
+        self.WNDPROC = ct.WINFUNCTYPE(LRESULT, wt.HWND, wt.UINT, wt.WPARAM, wt.LPARAM)
+
+        class WNDCLASS(ct.Structure):
+            _fields_ = [("style", wt.UINT), ("lpfnWndProc", self.WNDPROC), ("cbClsExtra", ct.c_int),
+                        ("cbWndExtra", ct.c_int), ("hInstance", wt.HINSTANCE), ("hIcon", wt.HICON),
+                        ("hCursor", wt.HANDLE), ("hbrBackground", wt.HBRUSH), ("lpszMenuName", wt.LPCWSTR),
+                        ("lpszClassName", wt.LPCWSTR)]
+
+        class GUID(ct.Structure):
+            _fields_ = [("a", ct.c_ulong), ("b", ct.c_ushort), ("c", ct.c_ushort), ("d", ct.c_ubyte * 8)]
+
+        class NOTIFYICONDATA(ct.Structure):
+            _fields_ = [("cbSize", wt.DWORD), ("hWnd", wt.HWND), ("uID", wt.UINT), ("uFlags", wt.UINT),
+                        ("uCallbackMessage", wt.UINT), ("hIcon", wt.HICON), ("szTip", wt.WCHAR * 128),
+                        ("dwState", wt.DWORD), ("dwStateMask", wt.DWORD), ("szInfo", wt.WCHAR * 256),
+                        ("uVersion", wt.UINT), ("szInfoTitle", wt.WCHAR * 64), ("dwInfoFlags", wt.DWORD),
+                        ("guidItem", GUID), ("hBalloonIcon", wt.HICON)]
+
+        self.WNDCLASS, self.NID = WNDCLASS, NOTIFYICONDATA
+        u, s = ct.windll.user32, ct.windll.shell32
+        u.DefWindowProcW.argtypes = [wt.HWND, wt.UINT, wt.WPARAM, wt.LPARAM]
+        u.DefWindowProcW.restype = LRESULT
+        u.CreateWindowExW.argtypes = [wt.DWORD, wt.LPCWSTR, wt.LPCWSTR, wt.DWORD, ct.c_int, ct.c_int, ct.c_int, ct.c_int,
+                                      wt.HWND, wt.HMENU, wt.HINSTANCE, wt.LPVOID]
+        u.CreateWindowExW.restype = wt.HWND
+        u.RegisterClassW.argtypes = [ct.POINTER(WNDCLASS)]
+        u.RegisterClassW.restype = wt.ATOM
+        u.LoadImageW.argtypes = [wt.HINSTANCE, wt.LPCWSTR, wt.UINT, ct.c_int, ct.c_int, wt.UINT]
+        u.LoadImageW.restype = wt.HANDLE
+        u.PostMessageW.argtypes = [wt.HWND, wt.UINT, wt.WPARAM, wt.LPARAM]
+        u.CreatePopupMenu.restype = wt.HMENU
+        u.AppendMenuW.argtypes = [wt.HMENU, wt.UINT, ct.c_size_t, wt.LPCWSTR]
+        u.TrackPopupMenu.argtypes = [wt.HMENU, wt.UINT, ct.c_int, ct.c_int, ct.c_int, wt.HWND, wt.LPVOID]
+        u.DestroyMenu.argtypes = [wt.HMENU]
+        u.DestroyWindow.argtypes = [wt.HWND]
+        u.SetForegroundWindow.argtypes = [wt.HWND]
+        u.RegisterWindowMessageW.argtypes = [wt.LPCWSTR]
+        u.RegisterWindowMessageW.restype = wt.UINT
+        s.Shell_NotifyIconW.argtypes = [wt.DWORD, ct.POINTER(NOTIFYICONDATA)]
+        s.Shell_NotifyIconW.restype = wt.BOOL
+        ct.windll.kernel32.GetModuleHandleW.argtypes = [wt.LPCWSTR]
+        ct.windll.kernel32.GetModuleHandleW.restype = wt.HINSTANCE
+
+    def _create_window(self):
+        ct, wt = self._ct, self._wt
+        u = ct.windll.user32
+        hinst = ct.windll.kernel32.GetModuleHandleW(None)
+        self.taskbar_created = u.RegisterWindowMessageW("TaskbarCreated")   # 탐색기가 다시 시작되면 아이콘을 다시 단다
+        self._proc = self.WNDPROC(self._wndproc)        # 가비지 수집 방지
+        wc = self.WNDCLASS()
+        wc.lpfnWndProc, wc.hInstance, wc.lpszClassName = self._proc, hinst, "GongmunTrayWindow"
+        u.RegisterClassW(ct.byref(wc))
+        self.hwnd = u.CreateWindowExW(0, "GongmunTrayWindow", "gongmun-tray", 0, 0, 0, 0, 0, None, None, hinst, None)
+        if not self.hwnd:
+            raise OSError("트레이 창을 만들지 못했습니다")
+        size = u.GetSystemMetrics(49)                   # SM_CXSMICON (보통 16)
+        self.hicon = u.LoadImageW(None, self.icon_path, 1, size, size, 0x10)   # IMAGE_ICON, LR_LOADFROMFILE
+        if not self.hicon:
+            self.hicon = u.LoadIconW(None, ct.c_void_p(32512))                 # 못 읽으면 기본 아이콘
+
+    def _notify(self, action):
+        ct = self._ct
+        d = self.NID()
+        d.cbSize = ct.sizeof(self.NID)
+        d.hWnd, d.uID, d.uFlags = self.hwnd, 1, 0x1 | 0x2 | 0x4          # MESSAGE | ICON | TIP
+        d.uCallbackMessage, d.hIcon, d.szTip = self.WM_TRAY, self.hicon, self.tooltip[:120]
+        if not ct.windll.shell32.Shell_NotifyIconW(action, ct.byref(d)):
+            if action == 0:
+                raise OSError("Shell_NotifyIcon 실패")
+
+    def _wndproc(self, hwnd, msg, wparam, lparam):
+        ct = self._ct
+        try:
+            if msg == self.WM_TRAY:
+                ev = lparam & 0xFFFF
+                if ev in (self.CLICK, self.DBLCLICK):
+                    self.commands.put("toggle")
+                elif ev in (self.RCLICK, self.CONTEXT):
+                    cmd = self._show_menu()
+                    if cmd:
+                        self.commands.put(cmd)
+                return 0
+            if msg == self.taskbar_created:
+                self._notify(0)
+                return 0
+            if msg == self.WM_STOP:
+                ct.windll.user32.DestroyWindow(hwnd)
+                return 0
+            if msg == 0x2:                              # WM_DESTROY
+                self._notify(2)                         # NIM_DELETE
+                ct.windll.user32.PostQuitMessage(0)
+                return 0
+        except Exception as e:
+            self.error = repr(e)
+        return ct.windll.user32.DefWindowProcW(hwnd, msg, wparam, lparam)
+
+    def _show_menu(self):
+        ct, wt = self._ct, self._wt
+        u = ct.windll.user32
+        items = self.menu_items()
+        menu = u.CreatePopupMenu()
+        ids = {}
+        for n, it in enumerate(items, start=1):
+            if it is None:
+                u.AppendMenuW(menu, 0x800, 0, None)     # MF_SEPARATOR
+                continue
+            cmd, text, checked = it
+            ids[n] = cmd
+            u.AppendMenuW(menu, 0x0 | (0x8 if checked else 0), n, text)    # MF_STRING | MF_CHECKED
+        pt = wt.POINT()
+        u.GetCursorPos(ct.byref(pt))
+        u.SetForegroundWindow(self.hwnd)                # 이걸 안 하면 메뉴 밖을 눌러도 안 닫힌다
+        chosen = u.TrackPopupMenu(menu, 0x100 | 0x2 | 0x80, pt.x, pt.y, 0, self.hwnd, None)   # RETURNCMD|RIGHTBUTTON|NONOTIFY
+        u.PostMessageW(self.hwnd, 0, 0, 0)
+        u.DestroyMenu(menu)
+        return ids.get(chosen)
