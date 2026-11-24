@@ -777,8 +777,8 @@ class SettingsDialog:
         ttk.Label(row, text="불투명도").pack(side="left")
         ttk.Combobox(row, textvariable=self.dc_alpha, values=["100%", "90%", "80%", "70%", "60%"], width=6,
                      state="readonly").pack(side="left", padx=(4, 14))
-        self.dc_lunar = tk.BooleanVar(value=dc.get("lunar", True))
-        self.dc_week = tk.BooleanVar(value=dc.get("weeknum", True))
+        self.dc_lunar = tk.BooleanVar(value=dc.get("lunar", False))
+        self.dc_week = tk.BooleanVar(value=dc.get("weeknum", False))
         ttk.Checkbutton(row, text="음력 표시", variable=self.dc_lunar).pack(side="left", padx=(0, 10))
         ttk.Checkbutton(row, text="주 번호 표시", variable=self.dc_week).pack(side="left")
         ttk.Label(p, style="Sub.TLabel", justify="left", text=(
@@ -1800,16 +1800,17 @@ class WidgetWindow:
 # ══════════════════════════════════════════════════════════════
 class DeskCalendar:
     THEMES = {
-        "dark": dict(bg="#0b151a", bar="#10232b", head="#1a3540", cell="#163039", weekend="#35271f",
-                     other="#0e1f25", fg="#e9eff1", sub="#93a8b1", sun="#ff8a80", sat="#8fbcff", hol="#ff8a80",
-                     term="#6fd69a", today="#f3e7a2", sel="#5b8def", ev="#dfe8ec", done="#6f8088",
-                     late="#ff9a8a", soon="#ffd27a", btn="#9fb3bc", btn_hover="#ffffff"),
-        "light": dict(bg="#dfe4ea", bar="#ffffff", head="#eef2f7", cell="#ffffff", weekend="#fff3ec",
-                      other="#f4f5f7", fg="#1f2430", sub="#7b8390", sun="#d0383b", sat="#2f6fed", hol="#d0383b",
-                      term="#2e9d5b", today="#2f6fed", sel="#8fb3ff", ev="#1f2430", done="#a3a9b2",
-                      late="#c0392b", soon="#b36b00", btn="#7b8390", btn_hover="#1f2430"),
+        # 칸을 색으로 채우지 않고, 가는 줄과 글자색·점으로만 구분하는 깔끔한 모양
+        "dark": dict(bg="#141922", bar="#141922", line="#262e3b", fg="#e8ecf2", sub="#8a93a3", dim="#4a5363",
+                     accent="#4c8dff", sun="#ff7676", sat="#74a7ff", hol="#ff7676", term="#5fd08f",
+                     today_fg="#ffffff", sel="#2a3547", ev="#d9dee7", done="#5c6574",
+                     late="#ff7676", soon="#ffc15e", normal="#4c8dff", btn="#7d8696", btn_hover="#ffffff"),
+        "light": dict(bg="#ffffff", bar="#ffffff", line="#e8ebf0", fg="#1f2430", sub="#8a909b", dim="#c4c8cf",
+                      accent="#2f6fed", sun="#e5484d", sat="#2f6fed", hol="#e5484d", term="#2e9d5b",
+                      today_fg="#ffffff", sel="#eef3ff", ev="#2b303a", done="#b0b5bd",
+                      late="#e5484d", soon="#e09100", normal="#2f6fed", btn="#9aa0aa", btn_hover="#1f2430"),
     }
-    DAYS = ["일요일", "월요일", "화요일", "수요일", "목요일", "금요일", "토요일"]
+    DAYS = ["일", "월", "화", "수", "목", "금", "토"]
 
     def __init__(self, app):
         self.app = app
@@ -1832,27 +1833,29 @@ class DeskCalendar:
 
         th = self.th
         bar = self.bar = tk.Frame(win, bg=th["bar"])
-        bar.pack(fill="x")
-        self._btn(bar, "◀", lambda: self.move(-1)).pack(side="left", padx=(8, 0))
-        self.title_lb = tk.Label(bar, font=(FONT, 13, "bold"), fg=th["fg"], bg=th["bar"])
-        self.title_lb.pack(side="left", padx=4, pady=4)
-        self._btn(bar, "▶", lambda: self.move(1)).pack(side="left")
+        bar.pack(fill="x", padx=14, pady=(12, 2))
+        self.title_lb = tk.Label(bar, font=(FONT, 20, "bold"), fg=th["fg"], bg=th["bar"])
+        self.title_lb.pack(side="left")
+        self.year_lb = tk.Label(bar, font=(FONT, 11), fg=th["sub"], bg=th["bar"])
+        self.year_lb.pack(side="left", padx=(6, 10), pady=(8, 0))
+        self._btn(bar, "‹", lambda: self.move(-1), size=16).pack(side="left")
+        self._btn(bar, "›", lambda: self.move(1), size=16).pack(side="left")
         self.today_lb = tk.Label(bar, font=(FONT, 10), fg=th["sub"], bg=th["bar"])
-        self.today_lb.pack(side="left", padx=12)
+        self.today_lb.pack(side="left", padx=14, pady=(6, 0))
         for text, cmd, tip in (("✕", self.close, "닫기"), ("⚙", self.menu_at_button, "메뉴"),
                                ("▣", app.show_main, "큰 달력"), ("＋", lambda: app.open_add_dialog(), "공문 추가"),
                                ("◐", self.cycle_alpha, "투명도")):
             self._btn(bar, text, cmd).pack(side="right", padx=2)
-        for wdg in (bar, self.title_lb, self.today_lb):
+        for wdg in (bar, self.title_lb, self.year_lb, self.today_lb):
             wdg.bind("<Button-1>", self.start_move)
             wdg.bind("<B1-Motion>", self.do_move)
             wdg.bind("<ButtonRelease-1>", self.end_move)
             wdg.bind("<Double-1>", lambda e: self.go_today())
 
-        self.hover = tk.Label(win, text="", font=(FONT, 9), fg=th["sub"], bg=th["bg"], anchor="w", padx=8)
-        self.hover.pack(side="bottom", fill="x")
+        self.hover = tk.Label(win, text="", font=(FONT, 9), fg=th["sub"], bg=th["bg"], anchor="w", padx=16)
+        self.hover.pack(side="bottom", fill="x", pady=(0, 4))
         self.cv = tk.Canvas(win, bg=th["bg"], highlightthickness=0)
-        self.cv.pack(fill="both", expand=True)
+        self.cv.pack(fill="both", expand=True, padx=8)
         grip = tk.Label(win, text="◢", font=(FONT, 9), fg=th["sub"], bg=th["bg"], cursor="sizing")
         grip.place(relx=1.0, rely=1.0, anchor="se")
         grip.bind("<Button-1>", self.start_resize)
@@ -1879,9 +1882,9 @@ class DeskCalendar:
         self._job = win.after(60000, self.tick)
 
     # ---- 작은 글자 버튼 --------------------------------------------------
-    def _btn(self, parent, text, cmd):
+    def _btn(self, parent, text, cmd, size=11):
         th = self.th
-        lb = tk.Label(parent, text=text, font=(FONT, 11), fg=th["btn"], bg=th["bar"], cursor="hand2", padx=5)
+        lb = tk.Label(parent, text=text, font=(FONT, size), fg=th["btn"], bg=th["bar"], cursor="hand2", padx=5)
         lb.bind("<Button-1>", lambda e: cmd())
         lb.bind("<Enter>", lambda e: lb.config(fg=th["btn_hover"]))
         lb.bind("<Leave>", lambda e: lb.config(fg=th["btn"]))
@@ -1999,38 +2002,40 @@ class DeskCalendar:
         today = dt.date.today()
         s = self.app.settings
         y, m = self.year, self.month
-        self.title_lb.config(text="%d년 %d월" % (y, m))
+        self.title_lb.config(text="%d월" % m)
+        self.year_lb.config(text=str(y))
         team = core.team_for(today, s)
-        lun = kcal.day_info(today)["lunar"]
-        self.today_lb.config(text="오늘 %d월 %d일 (%s)%s%s" % (
-            today.month, today.day, "월화수목금토일"[today.weekday()], ("  · 음력 " + lun) if lun else "",
-            ("  · 근무 %d팀" % team) if team else ""))
+        bits = ["오늘 %d. %d.(%s)" % (today.month, today.day, "월화수목금토일"[today.weekday()])]
+        if cfg.get("lunar", False):
+            bits.append("음력 " + kcal.day_info(today)["lunar"])
+        if team:
+            bits.append("근무 %d팀" % team)
+        self.today_lb.config(text="  ·  ".join(bits))
 
         weeks = calendar.Calendar(firstweekday=6).monthdatescalendar(y, m)
-        show_wk, show_lunar = cfg.get("weeknum", True), cfg.get("lunar", True)
-        left, top = (30 if show_wk else 0), 26
+        show_wk, show_lunar = cfg.get("weeknum", False), cfg.get("lunar", False)
+        left, top = (26 if show_wk else 0), 28
         cw, ch = (W - left) / 7, (H - top) / len(weeks)
         size = 10 if ch >= 90 and cw >= 110 else 9
-        f_num, f_small = self.font(size + 1, True), self.font(size - 1)
+        f_num, f_num_b = self.font(size + 2), self.font(size + 2, True)
+        f_small, f_head = self.font(size - 1), self.font(size - 1, True)
         f_ev, f_ev_done = self.font(size), self.font(size, strike=True)
-        f_head = self.font(size, True)
-        line_h = f_ev.metrics("linespace") + 2
+        line_h = f_ev.metrics("linespace") + 3
+        num_h = f_num.metrics("linespace")
 
-        for c, name in enumerate(self.DAYS):            # 요일 줄
-            x0 = left + c * cw
-            cv.create_rectangle(x0 + 1, 1, x0 + cw - 1, top - 1, fill=th["head"], outline="")
-            color = th["sun"] if c == 0 else (th["sat"] if c == 6 else th["fg"])
-            cv.create_text(x0 + cw / 2, top / 2, text=name if cw > 70 else name[0], fill=color, font=f_head)
-        if show_wk:
-            cv.create_rectangle(1, 1, left - 1, top - 1, fill=th["head"], outline="")
+        for c, name in enumerate(self.DAYS):            # 요일 (상자 없이 글자만)
+            color = th["sun"] if c == 0 else (th["sat"] if c == 6 else th["sub"])
+            cv.create_text(left + c * cw + 12, top / 2, text=name, fill=color, font=f_head, anchor="w")
+        cv.create_line(0, top - 1, W, top - 1, fill=th["line"])
 
-        self.app.store.ensure_window(weeks[0][0], weeks[-1][-1])
         by_date = self.app.store.group_by_date()
         for r, week in enumerate(weeks):
             y0 = top + r * ch
-            if show_wk:                                 # 주 번호 (월요일 기준 ISO 주)
-                cv.create_rectangle(1, y0 + 1, left - 1, y0 + ch - 1, fill=th["head"], outline="")
-                cv.create_text(left / 2, y0 + ch / 2, text=str(week[1].isocalendar()[1]), fill=th["sub"], font=f_head)
+            if r:
+                cv.create_line(left, y0, W, y0, fill=th["line"])    # 주 사이에 가는 줄 하나
+            if show_wk:
+                cv.create_text(left / 2, y0 + 8 + num_h / 2, text=str(week[1].isocalendar()[1]), fill=th["dim"],
+                               font=f_small)
             for c, d in enumerate(week):
                 x0 = left + c * cw
                 iso = d.isoformat()
@@ -2038,52 +2043,66 @@ class DeskCalendar:
                 in_m = d.month == m
                 info = kcal.day_info(d, show_lunar)
                 hol = info["holiday"]
-                fill = th["other"] if not in_m else (th["weekend"] if c in (0, 6) or hol else th["cell"])
-                cv.create_rectangle(x0 + 1, y0 + 1, x0 + cw - 1, y0 + ch - 1, fill=fill, outline="", tags=tag)
+                # 마우스를 받기 위한 칸 (배경과 같은 색)
+                cv.create_rectangle(x0, y0 + 1, x0 + cw, y0 + ch, fill=th["bg"], outline="", tags=tag)
                 if d == self.sel and d != today:
-                    cv.create_rectangle(x0 + 2, y0 + 2, x0 + cw - 2, y0 + ch - 2, outline=th["sel"], width=1, tags=tag)
-                if d == today:
-                    cv.create_rectangle(x0 + 2, y0 + 2, x0 + cw - 2, y0 + ch - 2, outline=th["today"], width=2, tags=tag)
+                    self.rrect(x0 + 3, y0 + 4, x0 + cw - 3, y0 + ch - 3, 8, fill=th["sel"], outline="", tags=tag)
 
-                numc = th["sub"] if not in_m else (th["hol"] if c == 0 or hol else (th["sat"] if c == 6 else th["fg"]))
-                cv.create_text(x0 + 7, y0 + 5, text=str(d.day), anchor="nw", font=f_num, fill=numc, tags=tag)
-                nx = x0 + 7 + f_num.measure(str(d.day)) + 6
+                nx, ny = x0 + 10, y0 + 8
+                if d == today:                          # 오늘: 날짜 뒤에 동그라미
+                    rr = num_h / 2 + 3
+                    cx = nx + f_num_b.measure(str(d.day)) / 2
+                    cv.create_oval(cx - rr, ny + num_h / 2 - rr, cx + rr, ny + num_h / 2 + rr, fill=th["accent"],
+                                   outline="", tags=tag)
+                    numc, fnt = th["today_fg"], f_num_b
+                else:
+                    numc = (th["hol"] if c == 0 or hol else th["sat"] if c == 6 else th["fg"]) if in_m else th["dim"]
+                    fnt = f_num
+                cv.create_text(nx, ny, text=str(d.day), anchor="nw", font=fnt, fill=numc, tags=tag)
+                lx = nx + f_num_b.measure(str(d.day)) + 8
                 label, lc = ((hol, th["hol"]) if hol else (info["term"], th["term"]) if info["term"]
-                             else (("(음)" + info["lunar"]) if info["lunar"] else "", th["sub"]))
+                             else (info["lunar"], th["sub"]) if info["lunar"] else ("", th["sub"]))
                 tm = core.team_for(d, s)
-                team_w = f_small.measure("3팀") + 10 if tm else 0
+                team_w = f_small.measure("3팀") + 12 if tm else 0
                 if label:
-                    cv.create_text(nx, y0 + 7, text=self.elide(label, f_small, x0 + cw - nx - team_w - 4), anchor="nw",
-                                   font=f_small, fill=lc if in_m else th["sub"], tags=tag)
-                if tm:
-                    col = TEAM_COLORS.get(tm, "#7a4fd6")
-                    if tm == s.get("my_team"):
-                        bw = f_small.measure("%d팀" % tm) + 6
-                        cv.create_rectangle(x0 + cw - 6 - bw, y0 + 5, x0 + cw - 6, y0 + 7 + f_small.metrics("linespace"),
-                                            fill=col, outline="", tags=tag)
-                        col = "#ffffff"
-                    cv.create_text(x0 + cw - 9, y0 + 7, text="%d팀" % tm, anchor="ne", font=f_small, fill=col, tags=tag)
+                    cv.create_text(lx, ny + 2, text=self.elide(label, f_small, x0 + cw - lx - team_w - 4), anchor="nw",
+                                   font=f_small, fill=lc if in_m else th["dim"], tags=tag)
+                if tm and in_m:                         # 근무팀: 작은 글자, 내 팀만 강조색
+                    mine = tm == s.get("my_team")
+                    cv.create_text(x0 + cw - 10, ny + 2, text="%d팀" % tm, anchor="ne",
+                                   font=f_head if mine else f_small,
+                                   fill=TEAM_COLORS.get(tm, th["accent"]) if mine else th["dim"], tags=tag)
 
                 evs = by_date.get(iso, [])
-                ey = y0 + 9 + f_num.metrics("linespace")
+                ey = ny + num_h + 8
                 room = max(0, int((y0 + ch - 4 - ey) // line_h))
                 show = evs if len(evs) <= room else evs[:max(0, room - 1)]
-                for ev in show:
+                for ev in show:                         # 일정: 색 점 + 글자
                     n = core.dday(ev["date"], today)
                     if ev.get("done"):
-                        color = th["done"]
+                        dot = th["done"]
                     elif ev.get("color") in EVENT_COLORS:
-                        color = DARK_TEXT[ev["color"]] if cfg.get("theme", "dark") == "dark" else EVENT_COLORS[ev["color"]][1]
+                        dot = DARK_TEXT[ev["color"]] if cfg.get("theme", "dark") == "dark" else EVENT_COLORS[ev["color"]][1]
                     else:
-                        color = th["late"] if n <= 0 and in_m else th["soon"] if n <= 3 else th["ev"]
-                    text = "• " + ((ev["time"] + " ") if ev.get("time") else "") + ev_label(ev)
+                        dot = th["late"] if n <= 0 else th["soon"] if n <= 3 else th["normal"]
+                    etag = tag + ("ev:" + ev["id"],)
+                    cy = ey + line_h / 2 - 1
+                    cv.create_oval(x0 + 11, cy - 3, x0 + 17, cy + 3, fill=dot if in_m else th["dim"], outline="", tags=etag)
+                    text = ((ev["time"] + " ") if ev.get("time") else "") + ev_label(ev)
                     fnt = f_ev_done if ev.get("done") else f_ev
-                    cv.create_text(x0 + 7, ey, text=self.elide(text, fnt, cw - 14), anchor="nw", font=fnt,
-                                   fill=color if in_m else th["sub"], tags=tag + ("ev:" + ev["id"],))
+                    color = th["done"] if ev.get("done") else (th["ev"] if in_m else th["dim"])
+                    cv.create_text(x0 + 22, ey, text=self.elide(text, fnt, cw - 30), anchor="nw", font=fnt,
+                                   fill=color, tags=etag)
                     ey += line_h
                 if len(evs) > len(show):
-                    cv.create_text(x0 + 7, ey, text="+%d건 더" % (len(evs) - len(show)), anchor="nw",
+                    cv.create_text(x0 + 22, ey, text="+%d" % (len(evs) - len(show)), anchor="nw",
                                    font=f_small, fill=th["sub"], tags=tag)
+
+    def rrect(self, x0, y0, x1, y1, r, **kw):
+        """둥근 모서리 사각형"""
+        pts = [x0 + r, y0, x1 - r, y0, x1, y0, x1, y0 + r, x1, y1 - r, x1, y1, x1 - r, y1, x0 + r, y1,
+               x0, y1, x0, y1 - r, x0, y0 + r, x0, y0]
+        return self.cv.create_polygon(pts, smooth=True, **kw)
 
     # ---- 마우스 --------------------------------------------------------------
     def _hit(self):
@@ -2104,7 +2123,7 @@ class DeskCalendar:
             self.hover.config(text="%s · %s %s · %s   (끌기 = 옮기기, Ctrl+끌기 = 복사, 더블클릭 = 설정·완료)" % (
                 state, ev["date"][5:], ev.get("kind", ""), ev_label(ev)))
         elif d:
-            info = kcal.day_info(d)
+            info = kcal.day_info(d, self.cfg.get("lunar", False))
             extra = " · ".join(x for x in (info["holiday"], info["term"], ("음력 " + info["lunar"]) if info["lunar"] else "") if x)
             self.hover.config(text="%d월 %d일 %s   (더블클릭 = 메모 추가)" % (d.month, d.day, extra))
         else:
@@ -2176,10 +2195,10 @@ class DeskCalendar:
         mode = self.cfg.get("mode", "desktop")
         for key, label in (("desktop", "바탕화면에 깔기 (다른 창 아래)"), ("normal", "일반 창"), ("top", "항상 위")):
             m.add_command(label=("● " if mode == key else "○ ") + label, command=lambda k=key: self.set_cfg("mode", k))
-        m.add_command(label=("☑ " if self.cfg.get("lunar", True) else "☐ ") + "음력 표시",
-                      command=lambda: self.set_cfg("lunar", not self.cfg.get("lunar", True)))
-        m.add_command(label=("☑ " if self.cfg.get("weeknum", True) else "☐ ") + "주 번호 표시",
-                      command=lambda: self.set_cfg("weeknum", not self.cfg.get("weeknum", True)))
+        m.add_command(label=("☑ " if self.cfg.get("lunar", False) else "☐ ") + "음력 표시",
+                      command=lambda: self.set_cfg("lunar", not self.cfg.get("lunar", False)))
+        m.add_command(label=("☑ " if self.cfg.get("weeknum", False) else "☐ ") + "주 번호 표시",
+                      command=lambda: self.set_cfg("weeknum", not self.cfg.get("weeknum", False)))
         m.add_command(label="밝은 테마" if self.cfg.get("theme", "dark") == "dark" else "어두운 테마",
                       command=lambda: self.set_cfg("theme", "light" if self.cfg.get("theme", "dark") == "dark" else "dark"))
         m.add_separator()
