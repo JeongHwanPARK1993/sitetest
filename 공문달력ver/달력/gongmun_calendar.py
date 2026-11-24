@@ -53,8 +53,9 @@ def resource_path(name):
 
 
 def ev_label(ev):
-    """달력에 보일 글자 (설정 창에서 바꿀 수 있다. 없으면 공문 제목)"""
-    return ev.get("label") or ev.get("title", "")
+    """달력에 보일 글자 (설정 창에서 바꿀 수 있다. 없으면 공문 제목). 반복 일정은 앞에 ↻"""
+    text = ev.get("label") or ev.get("title", "")
+    return ("↻ " + text) if ev.get("series") else text
 
 
 def parse_time_text(tm):
@@ -1025,14 +1026,18 @@ class Toast:
 
 # ══════════════════════════════════════════════════════════════
 #  일정 설정 / 메모 창 (일정을 더블클릭하거나, 날짜 빈 곳을 더블클릭하면 열린다)
-#    달력에 보일 글자 · 날짜 · 시간 · 구분 · 색깔 · 메모 · 완료(가운데 줄)
+#    달력에 보일 글자 · 날짜 · 시간 · 구분 · 색깔 · 반복(메모) · 메모 · 완료(가운데 줄)
 # ══════════════════════════════════════════════════════════════
 class EventDialog:
     def __init__(self, app, ev=None, day=None):
         self.app, self.ev = app, ev
         new = ev is None
-        is_memo = new or ev.get("kind") == "메모"
-        day = day or (dt.date.fromisoformat(ev["date"]) if ev else dt.date.today())
+        # 반복 일정의 한 날짜를 열면 원본(시리즈)을 고친다. 완료만 그날 것.
+        self.master = app.store.get(ev["series"]) if ev and ev.get("series") else ev
+        src = self.master or {}
+        is_memo = new or src.get("kind") == "메모"
+        self.is_memo = is_memo
+        day = day or (dt.date.fromisoformat(src["date"]) if src else dt.date.today())
         win = self.win = tk.Toplevel(app.root)
         win.title("메모 추가" if new else "일정 설정")
         win.configure(bg=BG)
@@ -1045,21 +1050,21 @@ class EventDialog:
         if new:
             head = "📝 %d월 %d일 (%s) 메모 · 일정 추가" % (day.month, day.day, "월화수목금토일"[day.weekday()])
         else:
-            head = ("📝 메모" if is_memo else "📄 공문 일정") + "  ·  " + ev["title"]
-        ttk.Label(box, text=head, style="Head.TLabel", wraplength=520, justify="left").grid(
+            head = ("📝 메모" if is_memo else "📄 공문 일정") + "  ·  " + src["title"]
+        ttk.Label(box, text=head, style="Head.TLabel", wraplength=540, justify="left").grid(
             row=0, column=0, columnspan=6, sticky="w", pady=(0, 12))
 
-        self.label_var = tk.StringVar(value="" if new else ev_label(ev))
+        self.label_var = tk.StringVar(value="" if new else ev_label(src))
         self.date_var = tk.StringVar(value=day.isoformat())
-        self.time_var = tk.StringVar(value="" if new else ev.get("time", ""))
-        self.kind_var = tk.StringVar(value="메모" if new else ev.get("kind", "기한"))
-        self.color = (ev or {}).get("color", "초록" if new else "")
+        self.time_var = tk.StringVar(value=src.get("time", ""))
+        self.kind_var = tk.StringVar(value=src.get("kind", "메모"))
+        self.color = src.get("color", "초록" if new else "")
         self.done_var = tk.BooleanVar(value=bool((ev or {}).get("done")))
 
         ttk.Label(box, text="달력에 보일 글자").grid(row=1, column=0, sticky="w")
-        ent = ttk.Entry(box, textvariable=self.label_var, width=46, font=(FONT, 11))
+        ent = ttk.Entry(box, textvariable=self.label_var, width=48, font=(FONT, 11))
         ent.grid(row=1, column=1, columnspan=5, sticky="we", padx=(8, 0), pady=3)
-        ttk.Label(box, text="날짜").grid(row=2, column=0, sticky="w")
+        ttk.Label(box, text="반복 시작일" if src.get("repeat") else "날짜").grid(row=2, column=0, sticky="w")
         ttk.Entry(box, textvariable=self.date_var, width=12).grid(row=2, column=1, sticky="w", padx=(8, 0), pady=3)
         ttk.Label(box, text="시간").grid(row=2, column=2, sticky="e", padx=(10, 4))
         ttk.Entry(box, textvariable=self.time_var, width=7).grid(row=2, column=3, sticky="w")
@@ -1074,24 +1079,32 @@ class EventDialog:
             bg, fg = EVENT_COLORS.get(name, ("#ffffff", SUB))
             lb = tk.Label(sw, text=name, bg=bg, fg=fg, font=(FONT, 9, "bold"), width=5, pady=3, cursor="hand2",
                           highlightthickness=2, highlightbackground=BG)
-            lb.grid(row=i // 9, column=i % 9, padx=2, pady=2)
+            lb.grid(row=0, column=i, padx=2, pady=2)
             lb.bind("<Button-1>", lambda e, n=name: self.pick_color(n))
             self.swatches[name] = lb
         ttk.Label(box, text="자동 = 기한이 가까우면 노랑, 지나면 빨강", style="Sub.TLabel").grid(
             row=4, column=1, columnspan=5, sticky="w", padx=(8, 0))
         self.pick_color(self.color or "자동")
 
-        ttk.Label(box, text="메모").grid(row=5, column=0, sticky="nw", pady=(10, 0))
-        self.memo = tk.Text(box, width=52, height=5, wrap="word", font=(FONT, 10), relief="flat", bg="#fbfcfe",
+        # ---- 반복 (메모만)
+        self.rep_frame = None
+        if is_memo:
+            self.build_repeat(box, src.get("repeat") or {})
+
+        ttk.Label(box, text="메모").grid(row=6, column=0, sticky="nw", pady=(10, 0))
+        self.memo = tk.Text(box, width=54, height=4, wrap="word", font=(FONT, 10), relief="flat", bg="#fbfcfe",
                             highlightthickness=1, highlightbackground=BORDER, highlightcolor=PRIMARY, padx=6, pady=4)
-        self.memo.grid(row=5, column=1, columnspan=5, sticky="we", padx=(8, 0), pady=(10, 0))
-        self.memo.insert("1.0", (ev or {}).get("memo", ""))
+        self.memo.grid(row=6, column=1, columnspan=5, sticky="we", padx=(8, 0), pady=(10, 0))
+        self.memo.insert("1.0", src.get("memo", ""))
 
         done = tk.Frame(box, bg="#eef7f0" if self.done_var.get() else "#f6f7f9", padx=10, pady=6)
-        done.grid(row=6, column=0, columnspan=6, sticky="we", pady=(12, 0))
-        self.done_cb = tk.Checkbutton(done, text="✔ 완료  (달력에 가운데 줄을 긋고, 기한 알림을 멈춥니다)",
-                                      variable=self.done_var, font=(FONT, 10, "bold"), fg=TEXT, bd=0,
-                                      bg=done["bg"], activebackground=done["bg"], highlightthickness=0)
+        done.grid(row=7, column=0, columnspan=6, sticky="we", pady=(12, 0))
+        done_text = "✔ 완료  (달력에 가운데 줄을 긋고, 기한 알림을 멈춥니다)"
+        if ev and ev.get("series"):
+            d0 = dt.date.fromisoformat(ev["date"])
+            done_text = "✔ %d월 %d일 것만 완료  (반복되는 다른 날은 그대로)" % (d0.month, d0.day)
+        self.done_cb = tk.Checkbutton(done, text=done_text, variable=self.done_var, font=(FONT, 10, "bold"), fg=TEXT,
+                                      bd=0, bg=done["bg"], activebackground=done["bg"], highlightthickness=0)
         self.done_cb.pack(anchor="w")
         self.done_frame = done
 
@@ -1102,17 +1115,141 @@ class EventDialog:
         self.done_var.trace_add("write", recolor)
 
         bar = ttk.Frame(box)
-        bar.grid(row=7, column=0, columnspan=6, sticky="we", pady=(14, 0))
+        bar.grid(row=8, column=0, columnspan=6, sticky="we", pady=(14, 0))
         ttk.Button(bar, text="저장", style="Accent.TButton", command=self.save).pack(side="right")
         ttk.Button(bar, text="취소", command=win.destroy).pack(side="right", padx=6)
         if not new:
             ttk.Button(bar, text="🗑 삭제", style="Danger.TButton", command=self.delete).pack(side="left")
-            if core.resolve_doc_path(ev):
-                ttk.Button(bar, text="📄 원본 공문 열기", command=lambda: app.open_event_doc(ev)).pack(side="left", padx=6)
+            if core.resolve_doc_path(src):
+                ttk.Button(bar, text="📄 원본 공문 열기", command=lambda: app.open_event_doc(src)).pack(side="left", padx=6)
         win.bind("<Escape>", lambda e: win.destroy())
         win.bind("<Control-Return>", lambda e: self.save())
         ent.focus_set()
         ent.select_range(0, "end")
+
+    # ---- 반복 설정 칸 ---------------------------------------------------------
+    def build_repeat(self, box, r):
+        ttk.Label(box, text="🔁 반복").grid(row=5, column=0, sticky="nw", pady=(12, 0))
+        f = self.rep_frame = tk.Frame(box, bg="#f6f7f9", padx=10, pady=8)
+        f.grid(row=5, column=1, columnspan=5, sticky="we", padx=(8, 0), pady=(12, 0))
+        names = [n for _, n in core.REPEAT_TYPES]
+        keys = [k for k, _ in core.REPEAT_TYPES]
+        self.rep_keys = dict(zip(names, keys))
+        start = parse_date_text(self.date_var.get())
+        self.rep_type = tk.StringVar(value=names[keys.index(r.get("type", "none"))] if r.get("type", "none") in keys else names[0])
+        self.rep_n = tk.StringVar(value=str(r.get("n", 2 if r.get("type") == "ndays" else 1)))
+        self.rep_days = [tk.BooleanVar(value=i in (r.get("days") or [start.weekday()])) for i in range(7)]
+        self.rep_day = tk.StringVar(value=str(r.get("day", start.day)))
+        nth_names = list(core.NTH_NAMES.values())
+        self.rep_nth = tk.StringVar(value=core.NTH_NAMES.get(int(r.get("nth", (start.day - 1) // 7 + 1)), "첫째"))
+        self.rep_wd = tk.StringVar(value=core.WEEKDAY_NAMES[int(r.get("wd", start.weekday()))] + "요일")
+        self.rep_workday = tk.BooleanVar(value=bool(r.get("workday")))
+        self.rep_end = tk.StringVar(value="until" if r.get("until") else ("count" if r.get("count") else "none"))
+        self.rep_until = tk.StringVar(value=r.get("until") or (start + dt.timedelta(days=90)).isoformat())
+        self.rep_count = tk.StringVar(value=str(r.get("count") or 10))
+
+        top = tk.Frame(f, bg=f["bg"])
+        top.pack(fill="x")
+        ttk.Combobox(top, textvariable=self.rep_type, values=names, width=18, state="readonly").pack(side="left")
+        self.rep_opt = tk.Frame(top, bg=f["bg"])                      # 종류마다 바뀌는 칸
+        self.rep_opt.pack(side="left", padx=(8, 0))
+        self.rep_more = tk.Frame(f, bg=f["bg"])                       # 주말 옮기기 · 끝나는 때 · 미리보기
+        self.rep_more.pack(fill="x", pady=(6, 0))
+        self.rep_preview = tk.Label(f, text="", bg=f["bg"], fg="#5b3a9c", font=(FONT, 9), anchor="w", justify="left")
+        self.rep_preview.pack(fill="x", pady=(4, 0))
+        self.nth_names = nth_names
+        for v in [self.rep_type, self.rep_n, self.rep_day, self.rep_nth, self.rep_wd, self.rep_workday, self.rep_end,
+                  self.rep_until, self.rep_count, self.date_var] + self.rep_days:
+            v.trace_add("write", lambda *_: self.update_repeat_preview())
+        self.rep_type.trace_add("write", lambda *_: self.layout_repeat())
+        self.layout_repeat()
+
+    def _spin(self, parent, var, lo, hi, width=4):
+        return tk.Spinbox(parent, from_=lo, to=hi, textvariable=var, width=width, font=(FONT, 10), relief="flat",
+                          highlightthickness=1, highlightbackground=BORDER, justify="center")
+
+    def _lbl(self, parent, text):
+        return tk.Label(parent, text=text, bg=parent["bg"], font=(FONT, 10))
+
+    def _chk(self, parent, text, var):
+        return tk.Checkbutton(parent, text=text, variable=var, bg=parent["bg"], activebackground=parent["bg"],
+                              font=(FONT, 10), bd=0, highlightthickness=0)
+
+    def layout_repeat(self):
+        for w in self.rep_opt.winfo_children() + self.rep_more.winfo_children():
+            w.destroy()
+        t = self.rep_keys[self.rep_type.get()]
+        o, m = self.rep_opt, self.rep_more
+        if t == "ndays":
+            self._spin(o, self.rep_n, 2, 365).pack(side="left")
+            self._lbl(o, "일마다").pack(side="left", padx=4)
+        elif t == "weekly":
+            self._spin(o, self.rep_n, 1, 8, 3).pack(side="left")
+            self._lbl(o, "주마다").pack(side="left", padx=(4, 8))
+            for i, name in enumerate(core.WEEKDAY_NAMES):
+                self._chk(o, name, self.rep_days[i]).pack(side="left")
+        elif t == "monthly":
+            self._spin(o, self.rep_day, 1, 31, 3).pack(side="left")
+            self._lbl(o, "일  (없는 날이면 그달 말일)").pack(side="left", padx=4)
+        elif t == "nth_weekday":
+            ttk.Combobox(o, textvariable=self.rep_nth, values=self.nth_names, width=6, state="readonly").pack(side="left")
+            ttk.Combobox(o, textvariable=self.rep_wd, values=[d + "요일" for d in core.WEEKDAY_NAMES], width=6,
+                         state="readonly").pack(side="left", padx=4)
+        if t in ("monthly", "month_start", "month_end", "nth_weekday", "yearly"):
+            self._chk(m, "주말·공휴일이면 평일로 옮기기", self.rep_workday).pack(anchor="w")
+        if t != "none":
+            row = tk.Frame(m, bg=m["bg"])
+            row.pack(anchor="w", pady=(2, 0))
+            self._lbl(row, "끝:").pack(side="left")
+            for val, text in (("none", "계속"), ("until", "날짜까지"), ("count", "횟수")):
+                tk.Radiobutton(row, text=text, value=val, variable=self.rep_end, bg=m["bg"], activebackground=m["bg"],
+                               font=(FONT, 10), bd=0, highlightthickness=0).pack(side="left", padx=(6, 0))
+            ttk.Entry(row, textvariable=self.rep_until, width=11).pack(side="left", padx=(8, 0))
+            self._spin(row, self.rep_count, 1, 999).pack(side="left", padx=(6, 0))
+            self._lbl(row, "회").pack(side="left")
+        self.update_repeat_preview()
+
+    def build_repeat_rule(self):
+        """화면 값 -> 반복 규칙 dict (반복 안 함이면 None). 값이 잘못되면 ValueError"""
+        if self.rep_frame is None:
+            return None
+        t = self.rep_keys[self.rep_type.get()]
+        if t == "none":
+            return None
+        r = {"type": t}
+        if t in ("ndays", "weekly"):
+            r["n"] = int(self.rep_n.get())
+        if t == "weekly":
+            r["days"] = [i for i, v in enumerate(self.rep_days) if v.get()]
+            if not r["days"]:
+                raise ValueError("요일을 하나 이상 골라 주세요.")
+        if t == "monthly":
+            r["day"] = max(1, min(31, int(self.rep_day.get())))
+        if t == "nth_weekday":
+            r["nth"] = {v: k for k, v in core.NTH_NAMES.items()}[self.rep_nth.get()]
+            r["wd"] = core.WEEKDAY_NAMES.index(self.rep_wd.get()[0])
+        if t in ("monthly", "month_start", "month_end", "nth_weekday", "yearly") and self.rep_workday.get():
+            r["workday"] = True
+        if self.rep_end.get() == "until":
+            r["until"] = parse_date_text(self.rep_until.get()).isoformat()
+        elif self.rep_end.get() == "count":
+            r["count"] = max(1, int(self.rep_count.get()))
+        return r
+
+    def update_repeat_preview(self):
+        if self.rep_frame is None:
+            return
+        try:
+            r = self.build_repeat_rule()
+            if not r:
+                self.rep_preview.config(text="")
+                return
+            start = parse_date_text(self.date_var.get())
+            ds = core.repeat_dates({"date": start.isoformat(), "repeat": r}, start, start + dt.timedelta(days=800))[:5]
+            nxt = ", ".join("%d/%d(%s)" % (d.month, d.day, "월화수목금토일"[d.weekday()]) for d in ds)
+            self.rep_preview.config(text="🔁 " + core.describe_repeat(r) + ("\n다음: " + nxt if nxt else "\n(해당하는 날이 없어요)"))
+        except (ValueError, KeyError) as e:
+            self.rep_preview.config(text="⚠ " + (str(e) if "요일" in str(e) else "숫자·날짜를 확인해 주세요"))
 
     def pick_color(self, name):
         self.color = "" if name == "자동" else name
@@ -1127,36 +1264,49 @@ class EventDialog:
         try:
             d = parse_date_text(self.date_var.get())
             tm = parse_time_text(self.time_var.get())
-        except ValueError:
-            messagebox.showwarning("입력 확인", "날짜는 2026-12-03, 시간은 14:00 처럼 적어 주세요.", parent=self.win)
+            rule = self.build_repeat_rule()
+        except ValueError as e:
+            msg = str(e) if "요일" in str(e) else "날짜는 2026-12-03, 시간은 14:00 처럼 적어 주세요."
+            messagebox.showwarning("입력 확인", msg, parent=self.win)
             return
         done = self.done_var.get()
         fields = {"date": d.isoformat(), "time": tm, "kind": self.kind_var.get(), "color": self.color,
-                  "memo": self.memo.get("1.0", "end").strip(), "done": done}
-        store = self.app.store
-        if self.ev is None:
-            ev = dict(fields, title=label, label="", done_at=d.isoformat() if done else "")
-            store.add(ev)
-            ev_id = ev["id"]
+                  "memo": self.memo.get("1.0", "end").strip()}
+        if self.is_memo:
+            fields["repeat"] = rule
+        store, ev, master = self.app.store, self.ev, self.master
+        if ev is None:                                  # 새 메모
+            new = dict(fields, title=label, label="", done=done and not rule,
+                       done_at=d.isoformat() if done and not rule else "")
+            store.add(new)
+            sel_id, go = new["id"], d
         else:
-            ev = self.ev
-            fields["label"] = "" if label == ev["title"] else label      # 공문 제목과 같으면 따로 저장 안 함
-            if ev.get("kind") == "메모":
+            fields["label"] = "" if label == master["title"] else label      # 공문 제목과 같으면 따로 저장 안 함
+            if master.get("kind") == "메모":
                 fields["title"], fields["label"] = label, ""
-            if done != bool(ev.get("done")):
-                fields["done_at"] = dt.date.today().isoformat() if done else ""
-            store.update(ev["id"], fields)
-            ev_id = ev["id"]
+            if ev.get("series"):                        # 반복 일정의 한 날: 원본을 고치고, 완료는 그날만
+                if done != bool(ev.get("done")):
+                    store.toggle_done(ev["id"])
+                store.update(master["id"], fields)
+                sel_id, go = ev["id"], dt.date.fromisoformat(ev["date"])
+            else:
+                if rule:
+                    fields["done"], fields["done_at"] = False, ""
+                else:
+                    fields["done"] = done
+                    if done != bool(master.get("done")):
+                        fields["done_at"] = dt.date.today().isoformat() if done else ""
+                store.update(master["id"], fields)
+                sel_id, go = master["id"], d
+                if rule:
+                    sel_id = None
         self.win.destroy()
-        self.app.pending_select_id = ev_id
-        self.app.go_to(d)
+        self.app.pending_select_id = sel_id
+        self.app.go_to(go)
 
     def delete(self):
-        if messagebox.askyesno("삭제", "이 일정을 삭제할까요?\n%s\n(보관된 공문 파일은 지워지지 않습니다)" % self.ev["title"],
-                               parent=self.win):
-            self.app.store.delete(self.ev["id"])
-            self.win.destroy()
-            self.app.refresh()
+        self.win.destroy()
+        self.app.delete_given(self.ev)
 
 
 # ══════════════════════════════════════════════════════════════
@@ -1839,6 +1989,7 @@ class DeskCalendar:
         if show_wk:
             cv.create_rectangle(1, 1, left - 1, top - 1, fill=th["head"], outline="")
 
+        self.app.store.ensure_window(weeks[0][0], weeks[-1][-1])
         by_date = self.app.store.group_by_date()
         for r, week in enumerate(weeks):
             y0 = top + r * ch
@@ -2265,8 +2416,9 @@ class App:
             w.destroy()
         self._cells = {}
 
-        by_date = self.store.group_by_date()
         weeks = calendar.Calendar(firstweekday=6).monthdatescalendar(self.year, self.month)   # 일요일 시작
+        self.store.ensure_window(weeks[0][0], weeks[-1][-1])
+        by_date = self.store.group_by_date()
         for c in range(7):
             self.cal_frame.columnconfigure(c, weight=1, uniform="day")
         for i, name in enumerate(["일", "월", "화", "수", "목", "금", "토"]):
@@ -2419,6 +2571,8 @@ class App:
                 t.insert("end", "📎 " + " / ".join(ev["attachments"]) + "\n", "meta")
             if ev.get("mine") or ev.get("note"):
                 t.insert("end", "★ 내 실적" + ((" · " + ev["note"]) if ev.get("note") else "") + "\n", "meta")
+            if ev.get("repeat"):
+                t.insert("end", "🔁 " + core.describe_repeat(ev["repeat"]) + "\n", "meta")
             if ev.get("memo"):
                 t.insert("end", "\n📝 " + ev["memo"] + "\n", "memo")
             if ev.get("kind") != "메모":
@@ -2575,6 +2729,15 @@ class App:
         self.refresh()
 
     def delete_given(self, ev):
+        if ev.get("series"):                            # 반복 일정: 그날만 / 전체
+            d = dt.date.fromisoformat(ev["date"])
+            ans = messagebox.askyesnocancel("반복 일정 삭제", "'%s' 는 반복 일정입니다.\n\n[예]  %d월 %d일 것만 지우기\n[아니요]  반복 전체 지우기"
+                                            % (ev["title"], d.month, d.day), parent=self.root)
+            if ans is None:
+                return
+            self.store.delete(ev["id"] if ans else ev["series"])
+            self.refresh()
+            return
         if messagebox.askyesno("삭제", "이 일정을 삭제할까요?\n%s\n(보관된 공문 파일은 지워지지 않습니다)" % ev["title"], parent=self.root):
             self.store.delete(ev["id"])
             self.refresh()
@@ -2778,12 +2941,13 @@ class App:
             s = self.settings
             if s.get("alerts_on", True):
                 alerted = s.setdefault("alerted", {})
-                items = core.due_alerts(self.store.events, dt.date.today(), s.get("alert_levels", [3, 1, 0]), alerted)
+                items = core.due_alerts(self.store.alert_events(dt.date.today()), dt.date.today(),
+                                        s.get("alert_levels", [3, 1, 0]), alerted)
                 if items:
                     for ev, lv in items:
                         alerted.setdefault(ev["id"], []).append(lv)
                     live = {e["id"] for e in self.store.events}
-                    for k in [k for k in alerted if k not in live]:     # 지워진 일정 기록은 정리
+                    for k in [k for k in alerted if k.split("@")[0] not in live]:     # 지워진 일정 기록은 정리
                         del alerted[k]
                     core.save_settings(s)
                     self.show_alerts(items)

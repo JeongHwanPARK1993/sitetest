@@ -781,6 +781,8 @@ class Store:
         self._tomb = {}                                 # 지운 일정 id -> 지운 시각
         self.mtime = 0
         self.version = 0                                # 내용이 바뀔 때마다 1씩 오른다 (화면 다시 그릴지 판단)
+        t = dt.date.today()
+        self.window = (t - dt.timedelta(days=400), t + dt.timedelta(days=800))   # 반복 일정을 펼쳐 둘 기간
         self._group = (None, {})
         self.load()
 
@@ -860,14 +862,24 @@ class Store:
         os.replace(tmp, self.path)
         self.mtime = self._file_mtime()
 
-    def get(self, ev_id):
+    # ---- 반복 일정 ----------------------------------------------------------
+    # 반복 메모는 원본 하나만 저장하고, 달력에는 날짜마다 '가짜 일정'(id = 원본id@날짜)을 만들어 보여 준다.
+    # 그날만 완료 = 원본의 done_dates 에 날짜 추가 / 그날만 삭제 = skip_dates 에 날짜 추가
+    def _master(self, ev_id):
         for e in self.events:
             if e["id"] == ev_id:
                 return e
         return None
 
+    def get(self, ev_id):
+        if ev_id and "@" in ev_id:
+            base, day = ev_id.split("@", 1)
+            m = self._master(base)
+            return occurrence(m, day) if m else None
+        return self._master(ev_id)
+
     def _edit(self, ev_id, fn):
-        e = self.get(ev_id)
+        e = self._master(ev_id.split("@", 1)[0] if ev_id else ev_id)
         if e is not None:
             fn(e)
             e["updated"] = self._now()
@@ -881,11 +893,28 @@ class Store:
         self.save()
 
     def delete(self, ev_id):
+        """일정 삭제. 반복 일정의 한 날짜(id@날짜)면 그날만 뺀다."""
+        if "@" in ev_id:
+            base, day = ev_id.split("@", 1)
+            self._edit(base, lambda e: e.setdefault("skip_dates", []).append(day))
+            return
         self.events = [e for e in self.events if e["id"] != ev_id]
         self._tomb[ev_id] = self._now()
         self.save()
 
     def toggle_done(self, ev_id):
+        if "@" in ev_id:                               # 반복 일정은 그날만 완료/취소
+            base, day = ev_id.split("@", 1)
+
+            def fn(e):
+                dd = e.setdefault("done_dates", [])
+                if day in dd:
+                    dd.remove(day)
+                else:
+                    dd.append(day)
+            self._edit(base, fn)
+            return
+
         def fn(e):
             e["done"] = not e.get("done", False)
             e["done_at"] = dt.date.today().isoformat() if e["done"] else ""   # 완료한 날짜 기록
@@ -900,23 +929,222 @@ class Store:
         self._edit(ev_id, lambda e: e.__setitem__("note", note))
 
     def update(self, ev_id, fields):
-        """설정 창에서 고친 값(글자 · 색 · 날짜 · 완료 · 메모 ...)을 한꺼번에 저장"""
+        """설정 창에서 고친 값(글자 · 색 · 날짜 · 완료 · 메모 · 반복 ...)을 한꺼번에 저장"""
         self._edit(ev_id, lambda e: e.update(fields))
+
+    def ensure_window(self, lo, hi):
+        """반복 일정을 펼쳐 둘 기간이 lo~hi 를 덮게 넓힌다 (달을 넘길 때 부른다)"""
+        wlo, whi = self.window
+        if lo < wlo or hi > whi:
+            self.window = (min(lo, wlo) - dt.timedelta(days=60), max(hi, whi) + dt.timedelta(days=60))
+            self._group = (None, {})
+
+    def expanded(self, lo=None, hi=None):
+        """보통 일정 + 반복 일정을 lo~hi 기간의 날짜별로 펼친 목록"""
+        lo, hi = lo or self.window[0], hi or self.window[1]
+        out = []
+        for e in self.events:
+            if e.get("repeat"):
+                out.extend(occurrence(e, d.isoformat()) for d in repeat_dates(e, lo, hi))
+            else:
+                out.append(e)
+        return out
 
     def group_by_date(self):
         """{날짜: [일정...]}  (내용이 바뀌지 않았으면 지난번 결과를 그대로 쓴다)"""
         if self._group[0] == self.version:
             return self._group[1]
         res = {}
-        for e in sorted(self.events, key=lambda e: (e["date"], e.get("time") or "")):
+        for e in sorted(self.expanded(), key=lambda e: (e["date"], e.get("time") or "")):
             res.setdefault(e["date"], []).append(e)
         self._group = (self.version, res)
         return res
 
+    def next_occurrences(self, today, days):
+        """반복 일정마다 오늘부터 days 일 안의 '다음 한 번' (임박 목록·알림용)"""
+        out = []
+        for e in self.events:
+            if e.get("repeat"):
+                for d in repeat_dates(e, today, today + dt.timedelta(days=days)):
+                    o = occurrence(e, d.isoformat())
+                    if not o.get("done"):
+                        out.append(o)
+                        break
+        return out
+
     def upcoming(self, today, days=14):
         limit = (today + dt.timedelta(days=days)).isoformat()
-        evs = [e for e in self.events if not e.get("done") and e["date"] <= limit]
+        evs = [e for e in self.events if not e.get("repeat") and not e.get("done") and e["date"] <= limit]
+        evs += self.next_occurrences(today, days)
         return sorted(evs, key=lambda e: (e["date"], e.get("time") or ""))
+
+    def alert_events(self, today):
+        """기한 알림 대상: 보통 일정 + 반복 일정의 가까운 날"""
+        return [e for e in self.events if not e.get("repeat")] + self.next_occurrences(today, 3)
+
+
+# ──────────────────────────────────────────────────────────────
+# 6-2. 반복 규칙
+#   {"type": "daily"}                         매일
+#   {"type": "ndays", "n": 3}                 3일마다
+#   {"type": "weekly", "n": 1, "days": [0,2]} 매주(또는 n주마다) 월·수   (0=월 ... 6=일)
+#   {"type": "monthly", "day": 15}            매달 15일 (없는 날이면 그달 말일)
+#   {"type": "month_start"}                   매월 초 (1일)
+#   {"type": "month_end"}                     매월 말 (말일)
+#   {"type": "nth_weekday", "nth": 2, "wd": 1} 매월 둘째 화요일 (nth=-1 이면 마지막)
+#   {"type": "yearly"}                        매년 같은 날
+#   공통: "workday": True  -> 주말·공휴일이면 평일로 옮김 (매월 초는 뒤로, 매월 말은 앞으로)
+#         "until": "2026-12-31" 또는 "count": 10  -> 끝나는 때
+# ──────────────────────────────────────────────────────────────
+REPEAT_TYPES = [("none", "반복 안 함"), ("daily", "매일"), ("ndays", "N일마다"), ("weekly", "매주 (요일 고르기)"),
+                ("monthly", "매달 N일"), ("month_start", "매월 초 (1일)"), ("month_end", "매월 말 (말일)"),
+                ("nth_weekday", "매월 N번째 ○요일"), ("yearly", "매년")]
+WEEKDAY_NAMES = "월화수목금토일"
+NTH_NAMES = {1: "첫째", 2: "둘째", 3: "셋째", 4: "넷째", 5: "다섯째", -1: "마지막"}
+
+
+def _last_day(y, m):
+    return (dt.date(y + m // 12, m % 12 + 1, 1) - dt.timedelta(days=1)).day
+
+
+def _is_off(d):
+    try:
+        import gongmun_kcal
+        return d.weekday() >= 5 or d in gongmun_kcal.holidays(d.year)
+    except Exception:
+        return d.weekday() >= 5
+
+
+def _to_workday(d, backward=False):
+    step = dt.timedelta(days=-1 if backward else 1)
+    for _ in range(10):
+        if not _is_off(d):
+            break
+        d += step
+    return d
+
+
+def _raw_dates(r, start, hi):
+    """규칙대로 start 부터 hi 까지 날짜를 차례로 낸다 (주말 옮기기 전)"""
+    t = r.get("type")
+    if t in ("daily", "ndays"):
+        step = dt.timedelta(days=1 if t == "daily" else max(1, int(r.get("n", 1))))
+        d = start
+        while d <= hi:
+            yield d
+            d += step
+    elif t == "weekly":
+        days = sorted(set(r.get("days") or [start.weekday()]))
+        n = max(1, int(r.get("n", 1)))
+        week0 = start - dt.timedelta(days=start.weekday())
+        w = 0
+        while week0 + dt.timedelta(weeks=w) <= hi:
+            if w % n == 0:
+                for wd in days:
+                    d = week0 + dt.timedelta(weeks=w, days=wd)
+                    if start <= d <= hi:
+                        yield d
+            w += 1
+    elif t in ("monthly", "month_start", "month_end", "nth_weekday", "yearly"):
+        y, m = start.year, start.month
+        while dt.date(y, m, 1) <= hi:
+            if t == "monthly":
+                d = dt.date(y, m, min(int(r.get("day", start.day)), _last_day(y, m)))
+            elif t == "month_start":
+                d = dt.date(y, m, 1)
+            elif t == "month_end":
+                d = dt.date(y, m, _last_day(y, m))
+            elif t == "yearly":
+                d = dt.date(y, m, min(start.day, _last_day(y, m))) if m == start.month else None
+            else:                                       # N번째 요일
+                nth, wd = int(r.get("nth", 1)), int(r.get("wd", start.weekday()))
+                if nth > 0:
+                    first = dt.date(y, m, 1)
+                    d = first + dt.timedelta(days=(wd - first.weekday()) % 7 + 7 * (nth - 1))
+                    d = d if d.month == m else None
+                else:
+                    last = dt.date(y, m, _last_day(y, m))
+                    d = last - dt.timedelta(days=(last.weekday() - wd) % 7)
+            if d is not None and start <= d:
+                yield d
+            m += 1
+            if m > 12:
+                y, m = y + 1, 1
+
+
+def repeat_dates(ev, lo, hi):
+    """반복 일정이 lo~hi 사이에 걸리는 날짜들"""
+    r = ev.get("repeat") or {}
+    if not r or r.get("type") in (None, "none"):
+        return []
+    try:
+        start = dt.date.fromisoformat(ev["date"])
+    except (KeyError, ValueError):
+        return []
+    until = dt.date.fromisoformat(r["until"]) if r.get("until") else None
+    count = int(r["count"]) if r.get("count") else None
+    end = min(hi, until) if until else hi
+    if count is None and lo - start > dt.timedelta(days=400) and r.get("type") in ("daily", "ndays"):
+        n = 1 if r["type"] == "daily" else max(1, int(r.get("n", 1)))   # 오래된 매일 반복은 앞부분 건너뛰기
+        start = start + dt.timedelta(days=((lo - start).days // n) * n)
+    skip = set(ev.get("skip_dates") or [])
+    out, k = [], 0
+    for d in _raw_dates(r, start, end + dt.timedelta(days=7)):
+        k += 1
+        if count is not None and k > count:
+            break
+        if r.get("workday") and r.get("type") in ("monthly", "month_start", "month_end", "nth_weekday", "yearly"):
+            d = _to_workday(d, backward=r.get("type") == "month_end")
+        if d > end:
+            if d > end + dt.timedelta(days=7):
+                break
+            continue
+        if d >= lo and d.isoformat() not in skip:
+            out.append(d)
+        if k > 20000:
+            break
+    return out
+
+
+def occurrence(ev, day):
+    """반복 일정의 한 날짜를 일정처럼 쓸 수 있는 사본"""
+    o = dict(ev)
+    o.update({"id": ev["id"] + "@" + day, "date": day, "series": ev["id"],
+              "done": day in (ev.get("done_dates") or []), "done_at": day if day in (ev.get("done_dates") or []) else ""})
+    return o
+
+
+def describe_repeat(r):
+    """{"type": "weekly", "days": [0, 2]} -> '매주 월·수'"""
+    if not r or r.get("type") in (None, "none"):
+        return ""
+    t = r["type"]
+    if t == "daily":
+        s = "매일"
+    elif t == "ndays":
+        s = "%d일마다" % int(r.get("n", 1))
+    elif t == "weekly":
+        n = int(r.get("n", 1))
+        s = ("매주" if n == 1 else "%d주마다" % n) + " " + "·".join(WEEKDAY_NAMES[d] for d in sorted(r.get("days") or []))
+    elif t == "monthly":
+        s = "매달 %d일" % int(r.get("day", 1))
+    elif t == "month_start":
+        s = "매월 초(1일)"
+    elif t == "month_end":
+        s = "매월 말(말일)"
+    elif t == "nth_weekday":
+        s = "매월 %s %s요일" % (NTH_NAMES.get(int(r.get("nth", 1)), ""), WEEKDAY_NAMES[int(r.get("wd", 0))])
+    elif t == "yearly":
+        s = "매년"
+    else:
+        s = "반복"
+    if r.get("workday"):
+        s += " (주말·공휴일이면 평일로)"
+    if r.get("until"):
+        s += " · %s까지" % r["until"]
+    elif r.get("count"):
+        s += " · %d회" % int(r["count"])
+    return s
 
 
 def dday(date_iso, today):
