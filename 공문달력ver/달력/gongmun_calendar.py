@@ -964,13 +964,46 @@ class SearchWindow:
 
 
 # ══════════════════════════════════════════════════════════════
+#  일정 끌어서 옮기기 / Ctrl 누르고 끌면 복사
+#    마우스를 따라다니는 작은 표 (어디로 옮기는지, 옮기기인지 복사인지 보여 준다)
+# ══════════════════════════════════════════════════════════════
+class DragGhost:
+    def __init__(self, root, text):
+        self.win = tk.Toplevel(root)
+        self.win.overrideredirect(True)
+        try:
+            self.win.attributes("-topmost", True)
+            self.win.attributes("-alpha", 0.92)
+        except tk.TclError:
+            pass
+        self.lb = tk.Label(self.win, text="", font=(FONT, 9, "bold"), bg=PRIMARY, fg="#ffffff", padx=8, pady=4)
+        self.lb.pack()
+        self.title = text
+
+    def show(self, x, y, copy, target=None):
+        where = ("  →  %d월 %d일" % (target.month, target.day)) if target else ""
+        self.lb.config(text=("⧉ 복사  " if copy else "↔ 옮기기  ") + self.title[:24] + where,
+                       bg="#2e9d5b" if copy else PRIMARY)
+        self.win.geometry("+%d+%d" % (x + 14, y + 12))
+
+    def close(self):
+        if self.win.winfo_exists():
+            self.win.destroy()
+
+
+def ctrl_down(e):
+    """Ctrl 키가 눌려 있는가 (윈도우·맥·리눅스)"""
+    return bool(e.state & 0x0004)
+
+
+# ══════════════════════════════════════════════════════════════
 #  알림 창 (화면 오른쪽 아래에 잠깐 떴다 사라지는 작은 창)
 # ══════════════════════════════════════════════════════════════
 class Toast:
     shown = []                                          # 지금 떠 있는 알림들 (위로 쌓는다)
     W, H = 340, 104
 
-    def __init__(self, app, title, body, color=PRIMARY, on_open=None, timeout=20000):
+    def __init__(self, app, title, body, color=PRIMARY, on_open=None, timeout=20000, link_text="자세히 보기 ›"):
         self.app, self.on_open = app, on_open
         w = self.win = tk.Toplevel(app.root)
         w.overrideredirect(True)
@@ -993,7 +1026,7 @@ class Toast:
         tk.Label(box, text=body, font=(FONT, 9), fg=TEXT, bg=CARD, justify="left", anchor="w",
                  wraplength=self.W - 50).pack(fill="x", pady=(4, 0))
         if on_open:
-            link = tk.Label(box, text="자세히 보기 ›", font=(FONT, 9, "bold"), fg=PRIMARY, bg=CARD, cursor="hand2")
+            link = tk.Label(box, text=link_text, font=(FONT, 9, "bold"), fg=PRIMARY, bg=CARD, cursor="hand2")
             link.pack(anchor="e")
             link.bind("<Button-1>", lambda e: self.open())
         Toast.shown.append(self)
@@ -1830,7 +1863,9 @@ class DeskCalendar:
         cv.bind("<Configure>", lambda e: self.schedule_redraw())
         cv.bind("<Motion>", self.on_motion)
         cv.bind("<Leave>", lambda e: self.hover.config(text=""))
-        cv.bind("<Button-1>", self.on_click)
+        cv.bind("<ButtonPress-1>", self.on_press)
+        cv.bind("<B1-Motion>", self.on_drag)
+        cv.bind("<ButtonRelease-1>", self.on_release)
         cv.bind("<Double-1>", self.on_double)
         for b3 in ("<Button-3>", "<Button-2>"):
             cv.bind(b3, self.on_right)
@@ -2066,7 +2101,7 @@ class DeskCalendar:
         if ev:
             n = core.dday(ev["date"], dt.date.today())
             state = "완료" if ev.get("done") else core.dday_text(n)
-            self.hover.config(text="%s · %s %s · %s   (더블클릭 = 설정·완료, 우클릭 = 메뉴)" % (
+            self.hover.config(text="%s · %s %s · %s   (끌기 = 옮기기, Ctrl+끌기 = 복사, 더블클릭 = 설정·완료)" % (
                 state, ev["date"][5:], ev.get("kind", ""), ev_label(ev)))
         elif d:
             info = kcal.day_info(d)
@@ -2075,10 +2110,41 @@ class DeskCalendar:
         else:
             self.hover.config(text="")
 
-    def on_click(self, _e):
-        d, _ev = self._hit()
-        if d:
-            self.sel = d
+    def day_at(self, x_root, y_root):
+        """화면 좌표 아래의 날짜"""
+        x, y = x_root - self.cv.winfo_rootx(), y_root - self.cv.winfo_rooty()
+        for item in reversed(self.cv.find_overlapping(x, y, x, y)):
+            for t in self.cv.gettags(item):
+                if t.startswith("day:"):
+                    return dt.date.fromisoformat(t[4:])
+        return None
+
+    def on_press(self, e):
+        d, ev = self._hit()
+        self._press = {"d": d, "ev": ev, "x": e.x_root, "y": e.y_root, "ghost": None}
+
+    def on_drag(self, e):
+        pr = getattr(self, "_press", None)
+        if not pr or not pr["ev"]:
+            return
+        if pr["ghost"] is None:
+            if abs(e.x_root - pr["x"]) + abs(e.y_root - pr["y"]) < 8:
+                return
+            pr["ghost"] = DragGhost(self.app.root, ev_label(pr["ev"]))
+        pr["ghost"].show(e.x_root, e.y_root, ctrl_down(e), self.day_at(e.x_root, e.y_root))
+
+    def on_release(self, e):
+        pr, self._press = getattr(self, "_press", None), None
+        if not pr:
+            return
+        if pr["ghost"] is not None:                     # 끌어서 놓음 = 옮기기 (Ctrl = 복사)
+            pr["ghost"].close()
+            target = self.day_at(e.x_root, e.y_root)
+            if target:
+                self.app.move_event(pr["ev"], target, copy=ctrl_down(e))
+            return
+        if pr["d"]:                                     # 그냥 클릭 = 날짜 선택
+            self.sel = pr["d"]
             self.redraw()
 
     def on_double(self, _e):
@@ -2315,7 +2381,7 @@ class App:
             lb.bind("<Enter>", lambda e, w=lb: w.config(fg=PRIMARY_DARK))
             lb.bind("<Leave>", lambda e, w=lb: w.config(fg=SUB))
             self.status_items[key] = lb
-        self.tip_lb = tk.Label(bar, text="일정 클릭 = 공문 내용 · 일정 더블클릭 = 설정·완료 · 날짜 더블클릭 = 메모 · 우클릭 = 메뉴",
+        self.tip_lb = tk.Label(bar, text="일정 클릭 = 공문 내용 · 끌기 = 옮기기(Ctrl = 복사) · 더블클릭 = 설정·완료 · 날짜 더블클릭 = 메모",
                                bg=STATUS_BG, fg="#9aa0aa", font=(FONT, 9))
         self.tip_lb.pack(side="right", padx=(0, 110))
 
@@ -2495,7 +2561,9 @@ class App:
             font = (FONT, 8, "overstrike") if ev.get("done") else (FONT, 8)      # 완료되면 가운데 줄
             lb = tk.Label(cell, text=mark + t, font=font, bg=b, fg=f, anchor="w", padx=3, cursor="hand2")
             lb.pack(fill="x", padx=3, pady=1)
-            lb.bind("<Button-1>", lambda e, d=day, ev=ev: self.on_event_click(d, ev))          # 한 번 클릭 = 선택
+            lb.bind("<ButtonPress-1>", lambda e, d=day, ev=ev: self.drag_press(e, d, ev))      # 한 번 클릭 = 선택 / 끌면 옮기기
+            lb.bind("<B1-Motion>", self.drag_motion)
+            lb.bind("<ButtonRelease-1>", self.drag_release)
             lb.bind("<Double-1>", lambda e, ev=ev: self.on_event_double(ev))                  # 더블클릭 = 설정·완료
             for b3 in ("<Button-3>", "<Button-2>"):                                           # 우클릭 = 메뉴
                 lb.bind(b3, lambda e, ev=ev: self.popup_menu(e.x_root, e.y_root, ev))
@@ -2669,6 +2737,95 @@ class App:
         self.month = (m - 1) % 12 + 1
         self.selected = dt.date(self.year, self.month, 1)
         self.refresh()
+
+    # ---- 일정 끌어서 옮기기 (Ctrl = 복사) ------------------------------------
+    def drag_press(self, e, day, ev):
+        self._drag = {"ev": ev, "day": day, "x": e.x_root, "y": e.y_root, "ghost": None, "cell": None}
+        self.on_event_click(day, ev)
+
+    def cell_at(self, x, y):
+        """화면 좌표 아래에 있는 달력 칸의 날짜"""
+        w = self.root.winfo_containing(x, y)
+        cells = {str(c): d for d, c in self._cells.items()}
+        while w is not None:
+            if str(w) in cells:
+                return cells[str(w)]
+            w = w.master
+        return None
+
+    def drag_motion(self, e):
+        dg = getattr(self, "_drag", None)
+        if not dg:
+            return
+        if dg["ghost"] is None:
+            if abs(e.x_root - dg["x"]) + abs(e.y_root - dg["y"]) < 8:
+                return                                  # 조금 흔들린 건 클릭으로 본다
+            if self._click_job:
+                self.root.after_cancel(self._click_job)
+                self._click_job = None
+            dg["ghost"] = DragGhost(self.root, ev_label(dg["ev"]))
+        target = self.cell_at(e.x_root, e.y_root)
+        if target != dg["cell"]:                        # 놓을 칸을 초록 테두리로 표시
+            for d in (dg["cell"], target):
+                c = self._cells.get(d)
+                if c is not None and c.winfo_exists():
+                    hl = d == target
+                    c.config(highlightthickness=2 if hl or d == self.selected else 1,
+                             highlightbackground="#2e9d5b" if hl else (PRIMARY if d == self.selected else "#e3e7ee"))
+            dg["cell"] = target
+        dg["ghost"].show(e.x_root, e.y_root, ctrl_down(e), target)
+
+    def drag_release(self, e):
+        dg, self._drag = getattr(self, "_drag", None), None
+        if not dg or dg["ghost"] is None:
+            return                                      # 끌지 않았으면 그냥 클릭
+        dg["ghost"].close()
+        self._mark_selected()
+        target = self.cell_at(e.x_root, e.y_root)
+        if target:
+            self.move_event(dg["ev"], target, copy=ctrl_down(e))
+
+    def move_event(self, ev, new_day, copy=False):
+        """일정을 다른 날로 옮기거나(copy=False) 복사한다. 반복 일정은 그날 것만 떼어 내서 옮긴다."""
+        new_iso, old_iso = new_day.isoformat(), ev["date"]
+        if new_iso == old_iso and not copy:
+            return
+        store = self.store
+        if copy or ev.get("series"):
+            src = store.get(ev["series"]) if ev.get("series") else ev
+            new = {k: v for k, v in src.items()
+                   if k not in ("id", "updated", "repeat", "done_dates", "skip_dates", "series", "done", "done_at")}
+            new.update(date=new_iso, done=False, done_at="")
+            if ev.get("series") and not copy:
+                store.delete(ev["id"])                  # 반복에서 그날만 빼고
+            store.add(new)
+            new_id = new["id"]
+
+            def undo():
+                store.delete(new_id)
+                if ev.get("series") and not copy:       # 빼 두었던 반복 날짜 되살리기
+                    m = store.get(ev["series"])
+                    if m:
+                        store.update(m["id"], {"skip_dates": [x for x in (m.get("skip_dates") or []) if x != old_iso]})
+                self.refresh()
+        else:
+            store.update(ev["id"], {"date": new_iso})
+            self.settings.get("alerted", {}).pop(ev["id"], None)   # 날짜가 바뀌었으니 알림을 다시 받게
+            new_id = ev["id"]
+
+            def undo():
+                store.update(ev["id"], {"date": old_iso})
+                self.refresh()
+        self.pending_select_id = new_id
+        if new_day in self._cells:                      # 지금 보이는 칸이면 달을 넘기지 않는다
+            self.selected = new_day
+            self.refresh()
+        else:
+            self.go_to(new_day)
+        o, n = dt.date.fromisoformat(old_iso), new_day
+        Toast(self, "⧉ 복사했어요" if copy else "↔ 옮겼어요",
+              "%s\n%d월 %d일 → %d월 %d일" % (ev_label(ev), o.month, o.day, n.month, n.day),
+              color="#2e9d5b" if copy else PRIMARY, on_open=undo, link_text="↶ 되돌리기", timeout=8000)
 
     def on_event_click(self, day, ev):
         """일정을 한 번 누르면 그날을 선택한다. (더블클릭과 구분하려고 0.25초 기다린다)
