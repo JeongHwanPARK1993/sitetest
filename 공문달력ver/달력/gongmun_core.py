@@ -1195,7 +1195,7 @@ def export_ics(events, path):
 #    '패턴'은 기준일부터 하루에 한 칸씩 돌아가는 근무팀 목록입니다.
 #    예) 패턴 [1,2,3] , 기준일에 1팀 근무 -> 기준일 1팀, 다음날 2팀, 그다음 3팀, 다시 1팀 ...
 # ──────────────────────────────────────────────────────────────
-DEFAULT_SETTINGS = {"anchor_date": "", "pattern": [1, 2, 3], "my_team": 0, "team_theme": "기본", "team_tint": False}
+DEFAULT_SETTINGS = {"anchor_date": "", "pattern": [1, 2, 3], "my_team": 0, "team_theme": "기본"}
 
 
 def load_settings():

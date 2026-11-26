@@ -69,40 +69,32 @@ def parse_time_text(tm):
     if not (0 <= h <= 23 and 0 <= m <= 59):
         raise ValueError(tm)
     return "%02d:%02d" % (h, m)
-# 근무팀 색 테마: 팀마다 (칠하는 색, 그 위의 글자색, 어두운 배경에서 쓸 글자색). 4팀 이후는 이어서 돌려 쓴다.
+# 근무팀 색 테마: 팀마다 글자색 두 가지 (흰 배경에서 쓸 색, 어두운 배경에서 쓸 색). 4팀 이후는 이어서 돌려 쓴다.
+# 칸을 칠하지 않고 '1팀 · 2팀 · 3팀' 글자 색만 바뀐다.
 TEAM_THEMES = {
     "기본": {"desc": "파랑 · 초록 · 주황", "colors": [
-        ("#2f6fed", "#ffffff", "#74a7ff"), ("#2e9d5b", "#ffffff", "#5fd08f"), ("#d98200", "#ffffff", "#ffb04d"),
-        ("#7a4fd6", "#ffffff", "#b69cff"), ("#d6336c", "#ffffff", "#ff8fb6"), ("#0b7285", "#ffffff", "#5fd0e0")]},
-    "파스텔": {"desc": "하늘 · 민트 · 살구", "colors": [
-        ("#a9c8ff", "#1b3a73", "#a9c8ff"), ("#a5e3c2", "#17503a", "#a5e3c2"), ("#ffd0a8", "#7a3f08", "#ffd0a8"),
-        ("#d5c4ff", "#43307a", "#d5c4ff"), ("#ffc2d9", "#7a2146", "#ffc2d9"), ("#a8e6ee", "#0c4d58", "#a8e6ee")]},
+        ("#2f6fed", "#74a7ff"), ("#2e9d5b", "#5fd08f"), ("#d98200", "#ffb04d"),
+        ("#7a4fd6", "#b69cff"), ("#d6336c", "#ff8fb6"), ("#0b7285", "#5fd0e0")]},
+    "차분": {"desc": "남색 · 청록 · 갈색", "colors": [
+        ("#3d5a99", "#8fa8dd"), ("#2a8577", "#6fc4b6"), ("#a8602c", "#e0a070"),
+        ("#6b5b95", "#b5a8d6"), ("#a14a62", "#e0a0b2"), ("#4f7a28", "#a8cf80")]},
     "진하게": {"desc": "보라 · 청록 · 분홍", "colors": [
-        ("#6d3df5", "#ffffff", "#b39bff"), ("#00897b", "#ffffff", "#4fd1c5"), ("#e0245e", "#ffffff", "#ff7aa8"),
-        ("#f57c00", "#ffffff", "#ffb060"), ("#1565c0", "#ffffff", "#7db6ff"), ("#558b2f", "#ffffff", "#9ed56a")]},
+        ("#6d3df5", "#b39bff"), ("#00897b", "#4fd1c5"), ("#e0245e", "#ff7aa8"),
+        ("#f57c00", "#ffb060"), ("#1565c0", "#7db6ff"), ("#558b2f", "#9ed56a")]},
 }
 _TEAM_THEME = ["기본"]
 
 
 def set_team_theme(name):
-    _TEAM_THEME[0] = name if name in TEAM_THEMES else "기본"
+    _TEAM_THEME[0] = name if name in TEAM_THEMES else "기본"      # 예전에 쓰던 '파스텔' 같은 이름은 기본으로
 
 
-def team_style(team):
-    """(칠하는 색, 그 위 글자색, 어두운 배경용 글자색)"""
+def team_text(team, dark=False):
+    """근무팀 글자색. dark=True 면 어두운 배경에서 잘 보이는 밝은 색"""
     cols = TEAM_THEMES[_TEAM_THEME[0]]["colors"]
-    return cols[(max(int(team), 1) - 1) % len(cols)]
+    return cols[(max(int(team), 1) - 1) % len(cols)][1 if dark else 0]
 
 
-def team_color(team):
-    return team_style(team)[0]
-
-
-def mix(c1, c2, t):
-    """c1 을 t(0~1) 만큼, c2 를 나머지만큼 섞은 색 (은은한 배경 만들 때)"""
-    a = [int(c1[i:i + 2], 16) for i in (1, 3, 5)]
-    b = [int(c2[i:i + 2], 16) for i in (1, 3, 5)]
-    return "#%02x%02x%02x" % tuple(round(a[i] * t + b[i] * (1 - t)) for i in range(3))
 
 # 화면 색 (한곳에서 바꾸면 전체가 바뀐다)
 PRIMARY = "#2f6fed"
@@ -752,11 +744,11 @@ class SettingsDialog:
             rowf = ttk.Frame(p)
             rowf.grid(row=6 + i, column=0, columnspan=2, sticky="w", padx=14, pady=1)
             ttk.Radiobutton(rowf, text="%s  (%s)" % (tname, td["desc"]), value=tname, variable=self.team_theme, width=22).pack(side="left")
-            for n_, (fc, oc, _d) in enumerate(td["colors"][:3], start=1):
-                tk.Label(rowf, text="%d팀" % n_, bg=fc, fg=oc, font=(FONT, 9, "bold"), padx=8, pady=2).pack(side="left", padx=2)
-        self.team_tint = tk.BooleanVar(value=bool(st.get("team_tint", False)))
-        ttk.Checkbutton(p, text="달력 칸 배경에도 근무팀 색을 은은하게 칠하기", variable=self.team_tint).grid(
-            row=9, column=0, columnspan=2, sticky="w", padx=14, pady=(8, 0))
+            for n_, (lc, _dc) in enumerate(td["colors"][:3], start=1):
+                tk.Label(rowf, text="%d팀" % n_, bg=CARD, fg=lc, font=(FONT, 11, "bold"), padx=10, pady=1,
+                         highlightthickness=1, highlightbackground=BORDER).pack(side="left", padx=2)
+        ttk.Label(p, text="칸을 칠하지 않고 '1팀 · 2팀 · 3팀' 글자 색만 바뀝니다. 내 팀은 굵게 보입니다.", style="Sub.TLabel").grid(
+            row=9, column=0, columnspan=2, sticky="w", padx=14, pady=(6, 0))
 
         # ---- 알림
         p = page(" ⏰ 기한 알림 ")
@@ -915,10 +907,11 @@ class SettingsDialog:
             "widget_flash": self.flash_var.get(),
             "watch_downloads": self.dl_on.get(), "download_dir": dl,
             "widgets": {"desk": self.w_desk.get(), "list": self.w_list.get()},
-            "team_theme": self.team_theme.get(), "team_tint": self.team_tint.get(),
+            "team_theme": self.team_theme.get(),
             "shared_dir": share, "rename_template": self.tpl_var.get(), "rename_date_fmt": self.datefmt_var.get(),
         })
         st.pop("clip_watch", None)
+        st.pop("team_tint", None)
         dc = st.setdefault("desk_cal", {})
         old_dc = dict(dc)
         dc.update({"mode": self.dc_mode.get(), "theme": "light" if self.dc_theme.get() == "밝게" else "dark",
@@ -1921,7 +1914,7 @@ class WidgetWindow:
         self.date_lb.config(text="%d월 %d일 (%s)" % (today.month, today.day, "월화수목금토일"[today.weekday()]))
         team = core.team_for(today, app.settings)
         if team:
-            self.team_lb.config(text="%d팀 근무" % team, bg=team_style(team)[0], fg=team_style(team)[1])
+            self.team_lb.config(text="%d팀 근무" % team, bg=self.HEAD, fg=team_text(team, dark=True))
         else:
             self.team_lb.config(text="팀 미설정", bg="#777777")
         self.pin_lb.config(fg=self.FG if self.topmost else self.SUB)
@@ -2218,7 +2211,6 @@ class DeskCalendar:
 
         weeks = calendar.Calendar(firstweekday=6).monthdatescalendar(y, m)
         show_wk, show_lunar = cfg.get("weeknum", False), cfg.get("lunar", False)
-        cfg_tint = self.app.settings.get("team_tint", False)
         left, top = (26 if show_wk else 0), 28
         cw, ch = (W - left) / 7, (H - top) / len(weeks)
         size = 10 if ch >= 90 and cw >= 110 else 9
@@ -2250,9 +2242,6 @@ class DeskCalendar:
                 hol = info["holiday"]
                 # 마우스를 받기 위한 칸 (배경과 같은 색)
                 cv.create_rectangle(x0, y0 + 1, x0 + cw, y0 + ch, fill=th["bg"], outline="", tags=tag)
-                if cfg_tint and in_m and core.team_for(d, s):         # 근무팀 색을 칸 배경에 은은하게
-                    self.rrect(x0 + 3, y0 + 4, x0 + cw - 3, y0 + ch - 3, 8,
-                               fill=mix(team_style(core.team_for(d, s))[0], th["bg"], 0.16), outline="", tags=tag)
                 if d == self.sel and d != today:
                     self.rrect(x0 + 3, y0 + 4, x0 + cw - 3, y0 + ch - 3, 8, fill=th["sel"], outline="", tags=tag)
 
@@ -2275,14 +2264,10 @@ class DeskCalendar:
                 if label:
                     cv.create_text(lx, ny + 2, text=self.elide(label, f_small, x0 + cw - lx - team_w - 4), anchor="nw",
                                    font=f_small, fill=lc if in_m else th["dim"], tags=tag)
-                if tm and in_m:                         # 근무팀: 팀 색 알약 (내 팀은 굵은 글자 + 테두리)
+                if tm and in_m:                         # 근무팀: 글자 색만 (내 팀은 굵게)
                     mine = tm == s.get("my_team")
-                    fill_c, on_c, _dk = team_style(tm)
-                    fnt_t = f_head if mine else f_small
-                    tw = fnt_t.measure("%d팀" % tm)
-                    self.rrect(x0 + cw - 12 - tw - 4, ny + 1, x0 + cw - 8, ny + 5 + fnt_t.metrics("linespace"), 7,
-                               fill=fill_c, outline=th["fg"] if mine else "", width=1, tags=tag)
-                    cv.create_text(x0 + cw - 10, ny + 3, text="%d팀" % tm, anchor="ne", font=fnt_t, fill=on_c, tags=tag)
+                    cv.create_text(x0 + cw - 10, ny + 2, text="%d팀" % tm, anchor="ne", font=f_head if mine else f_small,
+                                   fill=team_text(tm, dark=cfg.get("theme", "dark") == "dark"), tags=tag)
 
                 evs = by_date.get(iso, [])
                 ey = ny + num_h + 8
@@ -2751,7 +2736,7 @@ class App:
         team = core.team_for(self.today, self.settings)
         if team:
             self.team_var.set("오늘 근무 %d팀" % team)
-            self.team_label.config(bg=team_style(team)[0], fg=team_style(team)[1])
+            self.team_label.config(bg=PRIMARY_DARK, fg=team_text(team, dark=True))
         else:
             self.team_var.set("근무팀 설정하기 ›")
             self.team_label.config(bg="#5b7bd6")
@@ -2761,10 +2746,7 @@ class App:
         is_sel = day == self.selected
         is_today = day == self.today
         bg = "#eef4ff" if is_today else (CARD if in_month else "#f6f7f9")
-        if in_month and not is_today and self.settings.get("team_tint"):          # 근무팀 색을 칸 배경에 은은하게
-            t_ = core.team_for(day, self.settings)
-            if t_:
-                bg = mix(team_style(t_)[0], "#ffffff", 0.13)
+
         cell = tk.Frame(self.cal_frame, bg=bg, highlightthickness=2 if is_sel else 1,
                         highlightbackground=PRIMARY if is_sel else "#e3e7ee")
         cell.grid(row=row, column=col, sticky="nsew", padx=1, pady=1)
@@ -2789,11 +2771,10 @@ class App:
 
         team = core.team_for(day, self.settings)
         if team:
-            fill, on, _dk = team_style(team)
             mine = team == self.settings.get("my_team")
-            tl = tk.Label(head, text="%d팀" % team, font=(FONT, 8, "bold" if mine else "normal"), fg=on, bg=fill, padx=4,
-                          highlightthickness=1 if mine else 0, highlightbackground="#1f2430")
-            tl.pack(side="right", padx=3)
+            tl = tk.Label(head, text="%d팀" % team, font=(FONT, 9 if mine else 8, "bold" if mine else "normal"),
+                          fg=team_text(team) if in_month else "#b8bcc4", bg=bg)
+            tl.pack(side="right", padx=4)
             widgets.append(tl)
 
         for ev in events[:3]:                           # 칸에는 최대 3개까지만 보여 준다
