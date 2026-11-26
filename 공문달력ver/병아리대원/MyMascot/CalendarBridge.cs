@@ -32,6 +32,84 @@ public static class CalendarBridge
 
 	private static string Outbox => Path.Combine(Dir, "outbox.txt");
 
+	private static string SettingsFile => Path.Combine(Dir, "settings.txt");
+
+	private static string UpcomingFile => Path.Combine(Dir, "upcoming.txt");
+
+	/// <summary>달력이 연결된 적이 있는가 (달력이 설정 파일을 만들어 둔다)</summary>
+	public static bool Linked => File.Exists(SettingsFile);
+
+	/// <summary>달력 알람 설정 (key=value). 달력과 병아리대원이 같이 쓰고, 고친 쪽이 다른 쪽에 반영된다.</summary>
+	public static Dictionary<string, string> ReadSettings()
+	{
+		Dictionary<string, string> d = new Dictionary<string, string>();
+		try
+		{
+			if (File.Exists(SettingsFile))
+			{
+				foreach (string line in File.ReadAllLines(SettingsFile, Encoding.UTF8))
+				{
+					int eq = line.IndexOf('=');
+					if (eq > 0)
+					{
+						d[line.Substring(0, eq).Trim()] = line.Substring(eq + 1).Trim();
+					}
+				}
+			}
+		}
+		catch
+		{
+		}
+		return d;
+	}
+
+	public static void WriteSettings(Dictionary<string, string> d)
+	{
+		try
+		{
+			Directory.CreateDirectory(Dir);
+			List<string> lines = new List<string>();
+			foreach (KeyValuePair<string, string> kv in d)
+			{
+				lines.Add(kv.Key + "=" + kv.Value);
+			}
+			string tmp = SettingsFile + ".tmp";
+			File.WriteAllLines(tmp, lines.ToArray(), Utf8);
+			if (File.Exists(SettingsFile))
+			{
+				File.Delete(SettingsFile);
+			}
+			File.Move(tmp, SettingsFile);
+		}
+		catch
+		{
+		}
+	}
+
+	/// <summary>달력이 적어 둔 '지금 챙길 일' 목록: 한 줄에 날짜 [탭] 제목 [탭] 상태</summary>
+	public static List<string[]> ReadUpcoming()
+	{
+		List<string[]> list = new List<string[]>();
+		try
+		{
+			if (File.Exists(UpcomingFile))
+			{
+				foreach (string line in File.ReadAllLines(UpcomingFile, Encoding.UTF8))
+				{
+					string[] p = line.Split('\t');
+					if (p.Length >= 2)
+					{
+						list.Add(p);
+					}
+				}
+			}
+		}
+		catch
+		{
+		}
+		return list;
+	}
+
 	/// <summary>5초마다 불린다: 아직 묻지 않은 달력 질문이 있으면 하나 꺼내서 묻는다.</summary>
 	public static void Poll(MascotForm mascot)
 	{

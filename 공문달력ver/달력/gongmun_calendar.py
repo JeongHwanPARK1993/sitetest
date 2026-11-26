@@ -2555,6 +2555,8 @@ class App:
         self.chick_asks = self.load_chick_inbox()       # 병아리대원에게 물어보고 아직 대답을 못 받은 것
         self.chick_retry = []                           # [(다시 물을 시각, 일정 id, 단계, 횟수)]
         self.chick_snooze = {}                          # [진행중] 누른 일: id -> 다시 물을 시각
+        self._bridge_mtime = None
+        self.chick_sync_out()
         every = dt.timedelta(hours=int(self.settings.get("chick_checkin_every", 2)))
         self._last_checkin = dt.datetime.now() - every + dt.timedelta(minutes=3)   # 켜고 3분 뒤 첫 확인
         if self.settings.get("chick_auto"):
@@ -3199,6 +3201,7 @@ class App:
                 del self.chick_asks[k]
             self.chick_save_inbox()
         core.save_settings(self.settings)
+        self.chick_sync_out()
         self.pending_select_id = ev["id"]
         self.refresh()
 
@@ -3463,6 +3466,8 @@ class App:
         s = self.settings
         self._srev += 1
         set_team_theme(s.get("team_theme"))
+        if not first and hasattr(self, "_bridge_mtime"):
+            self.chick_sync_out()
         if share_changed:
             self.switch_store()
         dl = s.get("download_dir") or gs.default_download_dir()
@@ -3560,6 +3565,7 @@ class App:
                 messagebox.showinfo("병아리대원", "병아리대원 프로그램을 찾지 못했어요.\n(업무보조달력 폴더 안의 '병아리대원' 폴더를 확인해 주세요)",
                                     parent=self.root)
             return False
+        self.chick_sync_out(force=True)                 # 병아리대원 설정창에 '달력 알람' 이 바로 보이게
         try:
             subprocess.Popen([exe], cwd=os.path.dirname(exe))
         except OSError as e:
@@ -3602,6 +3608,81 @@ class App:
             return "삐약! %s '%s' 일정이 있어요. 챙겼어요?" % (lead, title)
         lead = {"D-3": "3일 남았어요!", "D-1": "내일까지예요!", "D-day": "오늘까지예요!", "지남": "기한이 지났어요!"}[lv]
         return "삐약! '%s' %s 했어요?" % (title, lead)
+
+    # ---- 병아리대원 설정창의 '달력 알람' 탭과 설정 주고받기 (달력연결\settings.txt, upcoming.txt)
+    CHICK_KEYS = {"checkin": "chick_checkin", "every": "chick_checkin_every", "range": "chick_range",
+                  "progress": "chick_progress_hours", "workhours": "chick_workhours", "alerts": "chick_alerts"}
+    CHICK_DEFAULTS = {"chick_checkin": True, "chick_checkin_every": 2, "chick_range": 1, "chick_progress_hours": 4,
+                      "chick_workhours": True, "chick_alerts": True}
+
+    def chick_sync_out(self, force=False):
+        """달력 쪽 설정과 '지금 챙길 일' 목록을 병아리대원이 볼 수 있게 적는다"""
+        d = gs.chick_dir()
+        if not force and not os.path.isdir(d):
+            return                                      # 병아리대원을 한 번도 안 썼으면 아무것도 만들지 않는다
+        s = self.settings
+        lines = []
+        for k, sk in self.CHICK_KEYS.items():
+            v = s.get(sk, self.CHICK_DEFAULTS[sk])
+            lines.append("%s=%s" % (k, ("1" if v else "0") if isinstance(v, bool) else int(v)))
+        lines += ["muted=%d" % len(s.get("chick_muted", [])), "changed_by=calendar"]
+        today = dt.date.today()
+        hi = today + dt.timedelta(days=int(s.get("chick_range", 1)))
+        muted, now = set(s.get("chick_muted", [])), dt.datetime.now()
+        rows = []
+        for e in sorted(self.store.expanded(today - dt.timedelta(days=30), hi), key=lambda e: (e["date"], e.get("time") or "")):
+            try:
+                d0 = dt.date.fromisoformat(e["date"])
+            except (KeyError, ValueError):
+                continue
+            if not (today - dt.timedelta(days=30) <= d0 <= hi) or e.get("done") or e.get("kind") == "변경전":
+                continue
+            state = "알람 꺼짐" if e["id"] in muted else (
+                "진행중 · %s에 다시" % self.chick_snooze[e["id"]].strftime("%H:%M") if self.chick_snooze.get(e["id"], now) > now
+                else ("기한 %d일 지남" % (today - d0).days if d0 < today else ""))
+            rows.append("%d/%d(%s)\t%s\t%s" % (d0.month, d0.day, "월화수목금토일"[d0.weekday()],
+                                               ev_label(e).replace("\t", " "), state))
+        try:
+            os.makedirs(d, exist_ok=True)
+            for name, body in (("upcoming.txt", rows[:40]), ("settings.txt", lines)):
+                path = os.path.join(d, name)
+                with open(path + ".tmp", "w", encoding="utf-8") as f:
+                    f.write("\n".join(body) + "\n")
+                os.replace(path + ".tmp", path)
+            self._bridge_mtime = os.path.getmtime(os.path.join(d, "settings.txt"))
+        except OSError:
+            pass
+
+    def chick_sync_in(self):
+        """병아리대원 설정창에서 고친 '달력 알람' 설정을 달력에 반영한다"""
+        path = os.path.join(gs.chick_dir(), "settings.txt")
+        try:
+            mt = os.path.getmtime(path)
+        except OSError:
+            return
+        if mt == self._bridge_mtime:
+            return
+        self._bridge_mtime = mt
+        vals = {}
+        try:
+            with open(path, "r", encoding="utf-8-sig") as f:
+                for line in f.read().splitlines():
+                    k, _, v = line.partition("=")
+                    vals[k.strip()] = v.strip()
+        except OSError:
+            return
+        if vals.get("changed_by") != "chick":
+            return
+        s = self.settings
+        for k, sk in self.CHICK_KEYS.items():
+            if k in vals:
+                s[sk] = (vals[k] == "1") if isinstance(self.CHICK_DEFAULTS[sk], bool) else int(vals[k] or 0)
+        if vals.get("unmute_all") == "1":
+            s["chick_muted"] = []
+        core.save_settings(s)
+        self.chick_sync_out(force=True)                 # 반영했다고 다시 적는다 (모두 다시 켜기 표시도 지움)
+        self.refresh()
+        Toast(self, "🐥 병아리대원 설정 반영", "병아리대원 설정창에서 고친 달력 알람 설정을\n달력에도 반영했어요.", timeout=4000)
 
     def chick_save_inbox(self):
         try:
@@ -3666,6 +3747,9 @@ class App:
 
     def chick_tick(self):
         """3초마다: 병아리대원의 대답을 달력에 반영하고, 미룬 질문·주기적 '했어요?' 를 보낸다"""
+        self.chick_sync_in()
+        if self._tick % 20 == 0:                        # 1분마다 '지금 챙길 일' 목록 새로
+            self.chick_sync_out()
         changed = False
         now = dt.datetime.now()
         if self.chick_asks or self.chick_retry or os.path.exists(os.path.join(gs.chick_dir(), "outbox.txt")):
@@ -3694,6 +3778,7 @@ class App:
                     for k in [k for k in self.chick_asks if k.split("~")[0] == ev["id"]]:
                         del self.chick_asks[k]
                     self.chick_retry = [r for r in self.chick_retry if r[1] != ev["id"]]
+                    self.chick_sync_out()
                     self.pending_select_id = ev["id"]
                     self.refresh()
                 elif ans == "open":

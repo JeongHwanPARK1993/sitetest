@@ -184,8 +184,13 @@ public class SettingsForm : Form
 		val7.UseVisualStyleBackColor = false;
 		TabPage val8 = val7;
 		tabs.TabPages.Add(val8);
-		Color[] tabColors = new Color[3] { TimeHeader, IntervalHeader, DateHeader };
-		Color[] tabSelColors = new Color[3] { TimeSelect, IntervalSelect, DateSelect };
+		TabPage calPage = new TabPage("달력 알람");
+		((Control)calPage).BackColor = Color.FromArgb(255, 249, 236);
+		calPage.UseVisualStyleBackColor = false;
+		tabs.TabPages.Add(calPage);
+		BuildCalendarTab(calPage);
+		Color[] tabColors = new Color[4] { TimeHeader, IntervalHeader, DateHeader, Color.FromArgb(255, 204, 128) };
+		Color[] tabSelColors = new Color[4] { TimeSelect, IntervalSelect, DateSelect, Color.FromArgb(232, 140, 30) };
 		tabs.DrawItem += (DrawItemEventHandler)delegate(object s, DrawItemEventArgs e)
 		{
 			//IL_004c: Unknown result type (might be due to invalid IL or missing references)
@@ -861,10 +866,142 @@ public class SettingsForm : Form
 		{
 			AutoStart.Set(autoStartCheck.Checked);
 		}
+		SaveCalendarTab();
 		Result = list;
 		IntervalResult = list2;
 		DateResult = list3;
 		((Form)this).DialogResult = (DialogResult)1;
 		((Form)this).Close();
+	}
+
+	// ───────── 달력 알람 탭 (업무보조 달력과 같은 설정을 보고 고친다) ─────────
+	private static readonly string[] CalRangeNames = new string[5] { "오늘까지", "내일까지", "3일 뒤까지", "일주일 뒤까지", "한 달 뒤까지" };
+
+	private static readonly int[] CalRangeDays = new int[5] { 0, 1, 3, 7, 30 };
+
+	private static readonly int[] CalEveryHours = new int[4] { 1, 2, 3, 4 };
+
+	private static readonly int[] CalLaterHours = new int[6] { 1, 2, 3, 4, 6, 8 };
+
+	private CheckBox calCheckin;
+
+	private CheckBox calWork;
+
+	private CheckBox calAlerts;
+
+	private ComboBox calEvery;
+
+	private ComboBox calRange;
+
+	private ComboBox calLater;
+
+	private Label calMuted;
+
+	private bool calUnmute;
+
+	private static string Get(Dictionary<string, string> d, string key, string def)
+	{
+		string v;
+		return d.TryGetValue(key, out v) ? v : def;
+	}
+
+	private static ComboBox MakeCombo(Control parent, int x, int y, int width, string[] items, int index)
+	{
+		ComboBox c = new ComboBox();
+		c.DropDownStyle = ComboBoxStyle.DropDownList;
+		c.Location = new Point(x, y);
+		c.Width = width;
+		c.Items.AddRange(items);
+		c.SelectedIndex = Math.Max(0, Math.Min(items.Length - 1, index));
+		parent.Controls.Add(c);
+		return c;
+	}
+
+	private static Label MakeLabel(Control parent, string text, int x, int y, int width)
+	{
+		Label l = new Label();
+		l.Text = text;
+		l.Location = new Point(x, y + 3);
+		l.Width = width;
+		l.AutoSize = false;
+		parent.Controls.Add(l);
+		return l;
+	}
+
+	private void BuildCalendarTab(TabPage page)
+	{
+		Dictionary<string, string> st = CalendarBridge.ReadSettings();
+		calCheckin = new CheckBox();
+		calCheckin.Text = "달력의 할 일을 주기적으로 '이 일 했어요?' 하고 물어보기";
+		calCheckin.Location = new Point(12, 8);
+		calCheckin.Width = 490;
+		calCheckin.Checked = Get(st, "checkin", "1") == "1";
+		page.Controls.Add(calCheckin);
+		MakeLabel(page, "물어보는 간격", 30, 36, 88);
+		calEvery = MakeCombo(page, 120, 36, 70, Array.ConvertAll(CalEveryHours, (int h) => h + "시간"), Array.IndexOf(CalEveryHours, int.Parse(Get(st, "every", "2"))));
+		MakeLabel(page, "확인할 범위", 210, 36, 75);
+		calRange = MakeCombo(page, 288, 36, 110, CalRangeNames, Array.IndexOf(CalRangeDays, int.Parse(Get(st, "range", "1"))));
+		MakeLabel(page, "[진행중] 누르면", 30, 66, 100);
+		calLater = MakeCombo(page, 132, 66, 70, Array.ConvertAll(CalLaterHours, (int h) => h + "시간"), Array.IndexOf(CalLaterHours, int.Parse(Get(st, "progress", "4"))));
+		MakeLabel(page, "뒤에 다시 물어보기", 208, 66, 140);
+		calWork = new CheckBox();
+		calWork.Text = "09시 ~ 18시 사이에만 물어보기";
+		calWork.Location = new Point(30, 94);
+		calWork.Width = 300;
+		calWork.Checked = Get(st, "workhours", "1") == "1";
+		page.Controls.Add(calWork);
+		calAlerts = new CheckBox();
+		calAlerts.Text = "기한 알림(3일 전 · 하루 전 · 당일 · 지남)도 병아리가 전하기";
+		calAlerts.Location = new Point(12, 118);
+		calAlerts.Width = 490;
+		calAlerts.Checked = Get(st, "alerts", "1") == "1";
+		page.Controls.Add(calAlerts);
+		MakeLabel(page, "지금 달력에서 챙길 일", 12, 146, 300).Font = new Font("맑은 고딕", 9f, FontStyle.Bold);
+		ListBox list = new ListBox();
+		list.Location = new Point(12, 168);
+		list.Size = new Size(500, 82);
+		list.HorizontalScrollbar = true;
+		foreach (string[] it in CalendarBridge.ReadUpcoming())
+		{
+			list.Items.Add(it[0] + "   " + it[1] + ((it.Length > 2 && it[2].Length > 0) ? ("   (" + it[2] + ")") : ""));
+		}
+		if (list.Items.Count == 0)
+		{
+			list.Items.Add(CalendarBridge.Linked ? "  챙길 일이 없어요. 잘하고 있어요!" : "  업무보조 달력과 아직 연결되지 않았어요. 달력에서 [병아리대원 출동]을 눌러 주세요.");
+		}
+		page.Controls.Add(list);
+		calMuted = MakeLabel(page, "알람 끈 일: " + Get(st, "muted", "0") + "개", 12, 258, 150);
+		Button unmute = new Button();
+		unmute.Text = "모두 다시 켜기";
+		unmute.Location = new Point(165, 256);
+		unmute.Width = 110;
+		unmute.Click += delegate
+		{
+			calUnmute = true;
+			calMuted.Text = "알람 끈 일: 0개 (저장하면 다시 물어봐요)";
+		};
+		page.Controls.Add(unmute);
+		MakeLabel(page, "[완료] 달력에 처리 완료 · [진행중] 정한 시간 뒤 다시 · [알람끄기] 그 일은 안 물어봄", 12, 284, 510).ForeColor = Color.FromArgb(110, 110, 110);
+	}
+
+	private void SaveCalendarTab()
+	{
+		if (calCheckin == null)
+		{
+			return;
+		}
+		Dictionary<string, string> st = CalendarBridge.ReadSettings();
+		st["checkin"] = calCheckin.Checked ? "1" : "0";
+		st["every"] = CalEveryHours[Math.Max(0, calEvery.SelectedIndex)].ToString();
+		st["range"] = CalRangeDays[Math.Max(0, calRange.SelectedIndex)].ToString();
+		st["progress"] = CalLaterHours[Math.Max(0, calLater.SelectedIndex)].ToString();
+		st["workhours"] = calWork.Checked ? "1" : "0";
+		st["alerts"] = calAlerts.Checked ? "1" : "0";
+		if (calUnmute)
+		{
+			st["unmute_all"] = "1";
+		}
+		st["changed_by"] = "chick";
+		CalendarBridge.WriteSettings(st);
 	}
 }
