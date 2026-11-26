@@ -898,6 +898,10 @@ public class MascotForm : Form
 		giftFrames = LoadFrameSet("gift");
 		focusHalfImage = TryLoad("focus1.5.png");
 		restImage = TryLoad("rest1.png");
+		clipFrame = TryLoad("idle5.png");                // 수첩(클립보드) 든 모습: 브리핑 · 메모
+		yayFrame = TryLoad("pose8.png");                 // 만세: 축하
+		happyFrame = TryLoad("idle7.png");               // 반짝 웃음: 응원
+		worryFrame = TryLoad("pose4.png");               // 시무룩: 걱정
 		climbFrames = LoadFrameSet("climb");
 		upFrames = LoadFrameSet("up");
 		List<Image> list = LoadFrameSet("pose");
@@ -1416,7 +1420,7 @@ public class MascotForm : Form
 
 	private void EnterState(MascotState newState)
 	{
-		if (focusMode && newState == MascotState.Walking)
+		if ((focusMode || !walkMode) && newState == MascotState.Walking)
 		{
 			newState = MascotState.Idle;
 			isDriving = false;
@@ -1436,7 +1440,7 @@ public class MascotForm : Form
 		{
 		case MascotState.Idle:
 		{
-			stateTicksRemaining = Ticks(rnd.Next(3500, 6000));
+			stateTicksRemaining = Ticks(walkMode ? rnd.Next(3500, 6000) : rnd.Next(15000, 30000));   // 얌전히 서 있을 땐 자세를 천천히 바꾼다
 			int num = ((idleFrames.Count > 0) ? rnd.Next(idleFrames.Count) : (-1));
 			selectedIdleFrame = ((num >= 0) ? idleFrames[num] : null);
 			selectedIdlePoseIndex = num;
@@ -1723,6 +1727,7 @@ public class MascotForm : Form
 		quietMode = on;
 		if (on)
 		{
+			walkMode = false;
 			if (focusMode)
 			{
 				SetFocusMode(on: false);
@@ -1742,6 +1747,7 @@ public class MascotForm : Form
 		focusMode = on;
 		if (on)
 		{
+			walkMode = false;
 			if (quietMode)
 			{
 				SetQuietMode(on: false);
@@ -1875,9 +1881,19 @@ public class MascotForm : Form
 			{
 				return;
 			}
-			focusChoices = new ChoiceBubbleForm(new string[2] { "더 집중하자!", "이제 그만 쉬자" }, delegate(int pick)
+			bool talk = CalendarBridge.Linked;
+			focusChoices = new ChoiceBubbleForm(talk ? new string[3] { "할 말 있어요", "더 집중하자!", "이제 그만 쉬자" } : new string[2] { "더 집중하자!", "이제 그만 쉬자" }, delegate(int pick)
 			{
 				focusChoices = null;
+				if (talk)
+				{
+					if (pick == 0)
+					{
+						OpenTalkBox();
+						return;
+					}
+					pick--;
+				}
 				if (focusMode)
 				{
 					if (pick == 0)
@@ -2088,13 +2104,27 @@ public class MascotForm : Form
 		talkBox = new TalkBoxForm(delegate(string text)
 		{
 			CalendarBridge.SendMemo("memo", text);
-			ShowSpeech(CalendarBridge.CalendarRunning ? "받아 적는 중이에요… 삐약!" : "달력이 꺼져 있어요. 달력을 켜면 바로 적을게요!", 4000);
-			RedrawNow();
+			if (CalendarBridge.CalendarRunning)
+			{
+				CheckNotebook("받아 적는 중이에요… 삐약!");
+			}
+			else
+			{
+				ShowSpeech("달력이 꺼져 있어요.\n달력을 켜면 바로 적을게요!", 4000);
+				RedrawNow();
+			}
 		}, delegate
 		{
 			CalendarBridge.SendMemo("today", "");
-			ShowSpeech(CalendarBridge.CalendarRunning ? "잠깐만요, 달력 보고 올게요!" : "달력이 꺼져 있어서 볼 수가 없어요 ㅠㅠ", 4000);
-			RedrawNow();
+			if (CalendarBridge.CalendarRunning)
+			{
+				CheckNotebook("잠깐만요, 수첩 확인해 볼게요!");
+			}
+			else
+			{
+				ShowSpeech("달력이 꺼져 있어서 볼 수가 없어요 ㅠㅠ", 4000);
+				RedrawNow();
+			}
 		});
 		((Form)talkBox).FormClosed += (FormClosedEventHandler)delegate
 		{
@@ -2103,29 +2133,120 @@ public class MascotForm : Form
 		talkBox.ShowNear(((Control)this).Bounds);
 	}
 
-	/// <summary>달력이 시킨 반응. kind: say / brief / dance(축하 춤) / cheer(응원) / worry(걱정)</summary>
-	public void CalendarReact(string kind, string text)
+	private bool walkMode;
+
+	private Image clipFrame;
+
+	private Image yayFrame;
+
+	private Image happyFrame;
+
+	private Image worryFrame;
+
+	private Image poseFrame;
+
+	private DateTime poseUntil = DateTime.MinValue;
+
+	private Timer poseTimer;
+
+	public bool WalkMode => walkMode;
+
+	/// <summary>돌아다니기 켜기/끄기. 끄면 제자리에 얌전히 서 있는다 (기본).</summary>
+	public void SetWalkMode(bool on)
 	{
-		int ms = (kind == "brief") ? 15000 : ((kind == "worry") ? 9000 : 6000);
-		bool canMove = !quietMode && !focusMode && !dragging && !isDriving
-			&& (state == MascotState.Walking || state == MascotState.Idle);
-		if (kind == "worry" && canMove)
+		walkMode = on;
+		if (on)
 		{
-			EnterState(MascotState.Idle);               // 걷다가 멈춰서 걱정
-			velX = 0;
-			stateTicksRemaining = Ticks(ms);
-			if (alertFrames.Count > 0)
+			if (focusMode)
 			{
-				selectedIdleFrame = alertFrames[rnd.Next(alertFrames.Count)];
-				selectedIdlePoseIndex = -1;
+				SetFocusMode(on: false);
+				if (this.FocusModeChanged != null)
+				{
+					this.FocusModeChanged(obj: false);
+				}
+			}
+			if (quietMode)
+			{
+				SetQuietMode(on: false);
+			}
+			walkMode = true;
+			if (state == MascotState.Idle || state == MascotState.Walking)
+			{
+				EnterState(MascotState.Walking);
 			}
 		}
-		ShowSpeech(text, ms);
-		if (canMove && (kind == "dance" || kind == "cheer" || kind == "brief"))
+		else if (state == MascotState.Walking && !isDriving)
 		{
-			Hop(kind == "dance" ? 5 : 1);
+			EnterState(MascotState.Idle);
+			velX = 0;
 		}
 		RedrawNow();
+	}
+
+	/// <summary>잠깐 특정 자세로 (수첩 들고 확인 · 만세 · 웃음 · 시무룩). 걷던 중이면 멈춰 선다.</summary>
+	private void ShowPose(Image img, int ms)
+	{
+		if (img == null)
+		{
+			return;
+		}
+		poseFrame = img;
+		poseUntil = DateTime.Now.AddMilliseconds(ms);
+		if (!focusMode && !dragging && !isDriving && (state == MascotState.Walking || state == MascotState.Idle))
+		{
+			EnterState(MascotState.Idle);
+			velX = 0;
+			stateTicksRemaining = Ticks(ms + 2000);
+		}
+		if (poseTimer == null)
+		{
+			poseTimer = new Timer();
+			poseTimer.Tick += delegate
+			{
+				poseTimer.Stop();
+				RedrawNow();
+			};
+		}
+		poseTimer.Stop();
+		poseTimer.Interval = Math.Max(100, ms + 50);
+		poseTimer.Start();
+		RedrawNow();
+	}
+
+	/// <summary>달력이 시킨 반응. kind: say / brief(수첩 브리핑) / dance(축하) / cheer(응원) / worry(걱정)</summary>
+	public void CalendarReact(string kind, string text)
+	{
+		int lines = text.Split('\n').Length;
+		int ms = (kind == "brief") ? Math.Min(30000, 6000 + 1800 * lines) : ((kind == "worry") ? 9000 : Math.Min(15000, 5000 + 1200 * lines));
+		ShowSpeech(text, ms);
+		switch (kind)
+		{
+		case "brief":
+		case "say":
+			ShowPose(clipFrame, ms);
+			break;
+		case "dance":
+			ShowPose(yayFrame ?? happyFrame, ms);
+			if (walkMode && !focusMode && !quietMode)
+			{
+				Hop(3);                                 // 돌아다니기 모드일 때만 콩콩
+			}
+			break;
+		case "cheer":
+			ShowPose(happyFrame ?? yayFrame, ms);
+			break;
+		case "worry":
+			ShowPose(worryFrame, ms);
+			break;
+		}
+		RedrawNow();
+	}
+
+	/// <summary>'오늘 할 일 알려줘': 수첩 꺼내 확인하는 중</summary>
+	public void CheckNotebook(string text)
+	{
+		ShowSpeech(text, 5000);
+		ShowPose(clipFrame, 5000);
 	}
 
 	/// <summary>제자리에서 콩콩 뛰기 (축하 춤)</summary>
@@ -2313,6 +2434,12 @@ public class MascotForm : Form
 			}
 			return fallFrames;
 		default:
+			if (poseFrame != null && DateTime.Now < poseUntil)
+			{
+				List<Image> lp = new List<Image>();
+				lp.Add(poseFrame);
+				return lp;
+			}
 			if (giftActive && selectedGiftFrame != null)
 			{
 				List<Image> list = new List<Image>();

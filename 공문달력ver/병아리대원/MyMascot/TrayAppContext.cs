@@ -70,12 +70,15 @@ public class TrayAppContext : ApplicationContext
 		quietItem.CheckOnClick = true;
 		ToolStripMenuItem focusItem = new ToolStripMenuItem("집중모드");
 		focusItem.CheckOnClick = true;
+		ToolStripMenuItem walkItem = new ToolStripMenuItem("돌아다니기");
+		walkItem.CheckOnClick = true;
 		((ToolStripItem)quietItem).Click += delegate
 		{
 			mascot.SetQuietMode(quietItem.Checked);
 			if (quietItem.Checked)
 			{
 				focusItem.Checked = false;
+				walkItem.Checked = false;
 			}
 		};
 		((ToolStripItem)focusItem).Click += delegate
@@ -84,6 +87,16 @@ public class TrayAppContext : ApplicationContext
 			if (focusItem.Checked)
 			{
 				quietItem.Checked = false;
+				walkItem.Checked = false;
+			}
+		};
+		((ToolStripItem)walkItem).Click += delegate
+		{
+			mascot.SetWalkMode(walkItem.Checked);       // 끄면 제자리에 얌전히
+			if (walkItem.Checked)
+			{
+				focusItem.Checked = false;
+				quietItem.Checked = false;
 			}
 		};
 		mascot.FocusModeChanged += delegate(bool on)
@@ -91,6 +104,7 @@ public class TrayAppContext : ApplicationContext
 			focusItem.Checked = on;
 		};
 		((ToolStrip)val2).Items.Add((ToolStripItem)(object)focusItem);
+		((ToolStrip)val2).Items.Add((ToolStripItem)(object)walkItem);
 		((ToolStrip)val2).Items.Add((ToolStripItem)(object)quietItem);
 		((ToolStrip)val2).Items.Add("대화", (Image)null, (EventHandler)delegate
 		{
@@ -107,6 +121,8 @@ public class TrayAppContext : ApplicationContext
 			OpenSettings();
 		};
 		((Control)mascot).ContextMenuStrip = val2;
+		mascot.SetFocusMode(on: true);                  // 출동하면 기본은 집중모드 (돌아다니기는 메뉴에서 켠다)
+		focusItem.Checked = true;
 		alarmTimer = new Timer();
 		alarmTimer.Interval = 5000;
 		alarmTimer.Tick += delegate

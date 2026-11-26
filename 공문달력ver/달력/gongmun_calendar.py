@@ -20,6 +20,7 @@ import calendar
 import datetime as dt
 import os
 import queue
+import random
 import re
 import subprocess
 import sys
@@ -51,6 +52,71 @@ def resource_path(name):
     """아이콘 같은 프로그램 부속 파일 위치 (exe 로 만들어도 찾을 수 있게)"""
     base = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
     return os.path.join(base, name)
+
+
+# ---- 병아리 인사말 (시간대 · 요일 · 계절 · 특별한 날) ----------------------------
+GREET_TIME = [            # (시작 시각(분), 끝 시각(분), 인사말들)
+    (0, 360, ["새벽까지 고생 많아요!", "이른 시간부터 수고해요!", "새벽 근무 힘내요!"]),
+    (360, 600, ["좋은 아침이에요! ☀", "상쾌한 아침이에요! ☀", "오늘 하루도 잘 부탁해요! ☀"]),
+    (600, 720, ["오전 업무 힘내요!", "오전도 순조롭게 가 봐요!", "벌써 오전이 반이나 지났어요!"]),
+    (720, 810, ["점심 맛있게 드셨어요?", "점심시간이에요! 든든하게 드세요", "밥 먹고 하는 일이 제일 잘돼요!"]),
+    (810, 1020, ["오후도 힘내요!", "나른한 오후, 기지개 한 번 켜요!", "오후 업무 같이 해치워요!"]),
+    (1020, 1140, ["퇴근 시간이 다가와요!", "오늘도 수고 많았어요!", "조금만 더 힘내요, 거의 다 왔어요!"]),
+    (1140, 1440, ["늦게까지 고생 많아요.", "야간 근무 힘내요!", "밤에도 안전 근무 삐약!"]),
+]
+GREET_SEASON = {
+    "winter": ["날이 많이 추워요. 따뜻하게 입으세요!", "손 시리죠? 따뜻한 차 한 잔 어때요?",
+               "겨울은 화재 많은 철이에요. 오늘도 안전 근무!", "빙판길 조심하세요!", "감기 조심하세요, 콜록 삐약"],
+    "spring": ["봄바람이 살랑살랑 불어요!", "환절기 감기 조심하세요!", "봄철 산불 조심 기간이에요!"],
+    "summer": ["더위 조심하세요! 물 자주 드세요", "무더운 날씨, 쉬어 가며 해요", "장마철 안전 점검 잊지 마요!"],
+    "autumn": ["선선한 가을이에요!", "일교차가 커요, 겉옷 챙기세요", "가을 하늘이 높아요!"],
+}
+
+
+def _season(d):
+    m = d.month
+    if m in (12, 1, 2) or (m == 11 and d.day >= 15):
+        return "winter"
+    return "spring" if m in (3, 4, 5) else ("summer" if m in (6, 7, 8) else "autumn")
+
+
+def chick_greeting(now, morning_brief=False):
+    """시간대에 맞는 첫 인사"""
+    mins = now.hour * 60 + now.minute
+    for lo, hi, bank in GREET_TIME:
+        if lo <= mins < hi:
+            return random.choice(bank)
+    return "삐약!"
+
+
+def chick_remark(now, settings=None):
+    """두 번째 줄 한마디: 특별한 날 > 요일 > 월말·월초 > 계절"""
+    d = now.date()
+    special = {(1, 1): "새해 복 많이 받으세요!", (12, 25): "메리 크리스마스!", (12, 31): "올 한 해 정말 수고 많았어요!",
+               (11, 9): "오늘은 소방의 날이에요! 늘 고마워요", (5, 1): "근로자의 날에도 출근하셨네요, 고생 많아요!"}
+    if (d.month, d.day) in special:
+        return special[(d.month, d.day)]
+    try:
+        if d in kcal.holidays(d.year):
+            return "공휴일에도 출근하셨네요. 고생 많아요!"
+    except Exception:
+        pass
+    wd = d.weekday()
+    picks = []
+    if wd == 0:
+        picks.append(random.choice(["한 주의 시작이에요! 힘차게 가 봐요", "월요일이에요, 천천히 시동 걸어요!"]))
+    elif wd == 4:
+        picks.append(random.choice(["벌써 금요일이에요! 조금만 더 힘내요", "불금이에요! 마무리 잘해 봐요"]))
+    elif wd >= 5:
+        picks.append("주말에도 출근하셨네요. 고생 많아요!")
+    nxt = d + dt.timedelta(days=1)
+    if nxt.month != d.month:
+        picks.append("오늘이 월말이에요. 마감 챙겨요!")
+    elif d.day == 1:
+        picks.append("새로운 달의 시작이에요!")
+    if picks and random.random() < 0.7:
+        return picks[0]
+    return random.choice(GREET_SEASON[_season(d)])
 
 
 def ev_label(ev):
@@ -3906,9 +3972,9 @@ class App:
         self.pending_select_id = ev["id"]
         self.refresh()
         when = self.short_day(r["date"]) + (" " + r["time"] if r["time"] else "")
-        msg = "삐약! %s '%s' 달력에 적었어요!" % (when, ev["title"])
+        msg = "달력에 적었어요! 삐약\n%s\n%s" % (when, ev["title"])
         if not r["found"]:
-            msg += " (날짜가 없어서 오늘로 적었어요)"
+            msg += "\n(날짜가 없어서 오늘로 적었어요)"
         if not self.chick_tell("say", msg):
             Toast(self, "🐥 달력에 적었어요", "%s  %s" % (when, ev["title"]), timeout=5000)
         self.chick_sync_out()
@@ -3936,17 +4002,43 @@ class App:
         tdy.sort(key=lambda e: e.get("time") or "99")
         return tdy, week, over
 
-    def brief_text(self, greet=True):
+    def brief_text(self, greet=True, now=None):
+        """병아리 수첩 브리핑 (여러 줄: 인사 / 한마디 / 건수 / 오늘 할 일 / 밀린 일)"""
+        now = now or dt.datetime.now()
         tdy, week, over = self.brief_counts()
-        head = "좋은 아침이에요! ☀ " if greet else ""
+        lines = [chick_greeting(now, morning_brief=greet), chick_remark(now, self.settings)]
+        if not greet:
+            lines[1] = "수첩 확인해 봤어요!"
+        lines.append("─────────────")
         if not (tdy or week or over):
-            return head + "오늘 · 이번 주 챙길 일이 없어요. 여유로운 하루 되세요 삐약~"
-        msg = head + "오늘 %d건 · 이번 주 %d건 · 지난 미처리 %d건이에요." % (len(tdy), len(week), len(over))
+            lines.append("오늘 · 이번 주 챙길 일이 없어요.")
+            lines.append("여유로운 하루 되세요 삐약~")
+            return "\n".join(lines)
+        lines.append("오늘 %d건  ·  이번 주 %d건  ·  밀린 일 %d건" % (len(tdy), len(week), len(over)))
+
+        def item(e, with_day=False):
+            t = ev_label(e).replace("↻ ", "").strip()
+            t = t if len(t) <= 16 else t[:15] + "…"
+            if with_day:
+                d = dt.date.fromisoformat(e["date"])
+                return "  · %d/%d  %s" % (d.month, d.day, t)
+            return "  · %s%s" % ((e["time"] + "  ") if e.get("time") else "", t)
         if tdy:
-            names = ", ".join(("%s %s" % (e["time"], ev_label(e).replace("↻ ", "")) if e.get("time") else ev_label(e).replace("↻ ", ""))[:24]
-                              for e in tdy[:2])
-            msg += " 오늘: " + names + (" 외 %d건" % (len(tdy) - 2) if len(tdy) > 2 else "")
-        return msg
+            lines.append("[오늘 할 일]")
+            lines += [item(e) for e in tdy[:3]]
+            if len(tdy) > 3:
+                lines.append("  · 외 %d건" % (len(tdy) - 3))
+        if over:
+            over = sorted(over, key=lambda e: e["date"])
+            lines.append("[밀린 일]")
+            lines += [item(e, True) for e in over[:2]]
+            if len(over) > 2:
+                lines.append("  · 외 %d건" % (len(over) - 2))
+        if not tdy and not over and week:
+            nxt = sorted(week, key=lambda e: (e["date"], e.get("time") or ""))
+            lines.append("[이번 주 다가오는 일]")
+            lines += [item(e, True) for e in nxt[:3]]
+        return "\n".join(l.rstrip() for l in lines)
 
     def chick_brief_tick(self, now):
         """아침 브리핑: 근무하는 날, 정한 시각이 지나서 처음 (하루 한 번)"""
@@ -3967,8 +4059,8 @@ class App:
         core.patch_settings({"brief_last": today})
         text = self.brief_text()
         if not self.chick_tell("brief", text):
-            Toast(self, "☀ 아침 브리핑", text.replace("좋은 아침이에요! ☀ ", "").replace(" 오늘: ", "\n오늘: "),
-                  color="#d98200", timeout=12000)
+            head, _, body = text.partition("\n")
+            Toast(self, "☀ " + head, body.replace("─────────────\n", ""), color="#d98200", timeout=15000)
         _, _, over = self.brief_counts()
         if len(over) >= 3:
             self._react_days["worry"] = today              # 브리핑에서 이미 말했으니 오늘은 걱정 반응 안 함

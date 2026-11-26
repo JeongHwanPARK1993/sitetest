@@ -81,6 +81,12 @@ public class SpeechBubbleForm : Form
 			SizeToText(text);
 		}
 		Point point = new Point(anchorX - 20, anchorY - ((Control)this).Height);
+		if (IsReport(text))                             // 넓은 수첩 말풍선은 화면 밖으로 안 나가게
+		{
+			Rectangle wa = Screen.FromPoint(new Point(anchorX, anchorY)).WorkingArea;
+			point.X = Math.Max(wa.Left, Math.Min(point.X, wa.Right - ((Control)this).Width));
+			point.Y = Math.Max(wa.Top, point.Y);
+		}
 		if (flag)
 		{
 			((Form)this).Location = point;
@@ -89,6 +95,55 @@ public class SpeechBubbleForm : Form
 		else if (((Form)this).Location != point)
 		{
 			((Form)this).Location = point;
+		}
+	}
+
+	/// <summary>여러 줄 브리핑(수첩 말풍선): 넓게, 첫 줄은 굵게 가운데, 나머지는 왼쪽 정렬</summary>
+	private static bool IsReport(string text)
+	{
+		return text != null && text.IndexOf('\n') >= 0;
+	}
+
+	private const float ReportWidth = 300f;
+
+	private static Font BodyFont()
+	{
+		return new Font("맑은 고딕", 9.5f, FontStyle.Regular);
+	}
+
+	private void DrawReport(Graphics g, string text, Font head, Brush brush, RectangleF core)
+	{
+		Font body = BodyFont();
+		try
+		{
+			using (SolidBrush sub = new SolidBrush(Color.FromArgb(255, 150, 110, 40)))
+			{
+				string[] rows = text.Split('\n');
+				float y = core.Y + 14f;
+				float left = core.X + 16f;
+				float width = core.Width - 32f;
+				for (int r = 0; r < rows.Length; r++)
+				{
+					Font f = (r == 0) ? head : body;
+					string row = rows[r];
+					Brush b = (row.StartsWith("[") || row.StartsWith("─")) ? sub : brush;
+					using (StringFormat sf = new StringFormat())
+					{
+						sf.Alignment = (r == 0) ? StringAlignment.Center : StringAlignment.Near;
+						foreach (string ln in WrapLines(row, f, g, width))
+						{
+							float x = (r == 0) ? (core.X + core.Width / 2f) : left;
+							g.DrawString(ln, f, b, x, y, sf);
+							y += f.GetHeight(g);
+						}
+					}
+					y += (r == 0) ? 3f : 1f;
+				}
+			}
+		}
+		finally
+		{
+			body.Dispose();
 		}
 	}
 
@@ -141,6 +196,33 @@ public class SpeechBubbleForm : Form
 				Font val3 = BubbleFont();
 				try
 				{
+					if (IsReport(text))
+					{
+						Font body = BodyFont();
+						try
+						{
+							float w = 0f;
+							float h = 0f;
+							string[] rows = text.Split('\n');
+							for (int r = 0; r < rows.Length; r++)
+							{
+								Font f = (r == 0) ? val3 : body;
+								List<string> wr = WrapLines(rows[r], f, val2, ReportWidth);
+								foreach (string ln in wr)
+								{
+									w = Math.Max(w, val2.MeasureString(ln, f).Width);
+								}
+								h += f.GetHeight(val2) * Math.Max(1, wr.Count) + ((r == 0) ? 3f : 1f);
+							}
+							((Control)this).Width = Math.Max(200, (int)w + 8 + 56);
+							((Control)this).Height = (int)h + 44 + 24;
+						}
+						finally
+						{
+							body.Dispose();
+						}
+						return;
+					}
 					List<string> list = WrapLines(text, val3, val2, 182f);
 					float num = 0f;
 					foreach (string item in list)
@@ -319,7 +401,11 @@ public class SpeechBubbleForm : Form
 						StringFormat val6 = val5;
 						try
 						{
-							List<string> list = WrapLines(text, val3, val2, core.Width - 20f - 4f);
+							if (IsReport(text))
+							{
+								DrawReport(val2, text, val3, val4, core);
+							}
+							List<string> list = IsReport(text) ? new List<string>() : WrapLines(text, val3, val2, core.Width - 20f - 4f);
 							float height = val3.GetHeight(val2);
 							float num2 = height * (float)list.Count;
 							float num3 = core.Y + (core.Height - num2) / 2f;
