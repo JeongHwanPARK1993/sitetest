@@ -69,7 +69,40 @@ def parse_time_text(tm):
     if not (0 <= h <= 23 and 0 <= m <= 59):
         raise ValueError(tm)
     return "%02d:%02d" % (h, m)
-TEAM_COLORS = {1: "#2f6fed", 2: "#2e9d5b", 3: "#d98200"}      # 1팀 파랑 / 2팀 초록 / 3팀 주황
+# 근무팀 색 테마: 팀마다 (칠하는 색, 그 위의 글자색, 어두운 배경에서 쓸 글자색). 4팀 이후는 이어서 돌려 쓴다.
+TEAM_THEMES = {
+    "기본": {"desc": "파랑 · 초록 · 주황", "colors": [
+        ("#2f6fed", "#ffffff", "#74a7ff"), ("#2e9d5b", "#ffffff", "#5fd08f"), ("#d98200", "#ffffff", "#ffb04d"),
+        ("#7a4fd6", "#ffffff", "#b69cff"), ("#d6336c", "#ffffff", "#ff8fb6"), ("#0b7285", "#ffffff", "#5fd0e0")]},
+    "파스텔": {"desc": "하늘 · 민트 · 살구", "colors": [
+        ("#a9c8ff", "#1b3a73", "#a9c8ff"), ("#a5e3c2", "#17503a", "#a5e3c2"), ("#ffd0a8", "#7a3f08", "#ffd0a8"),
+        ("#d5c4ff", "#43307a", "#d5c4ff"), ("#ffc2d9", "#7a2146", "#ffc2d9"), ("#a8e6ee", "#0c4d58", "#a8e6ee")]},
+    "진하게": {"desc": "보라 · 청록 · 분홍", "colors": [
+        ("#6d3df5", "#ffffff", "#b39bff"), ("#00897b", "#ffffff", "#4fd1c5"), ("#e0245e", "#ffffff", "#ff7aa8"),
+        ("#f57c00", "#ffffff", "#ffb060"), ("#1565c0", "#ffffff", "#7db6ff"), ("#558b2f", "#ffffff", "#9ed56a")]},
+}
+_TEAM_THEME = ["기본"]
+
+
+def set_team_theme(name):
+    _TEAM_THEME[0] = name if name in TEAM_THEMES else "기본"
+
+
+def team_style(team):
+    """(칠하는 색, 그 위 글자색, 어두운 배경용 글자색)"""
+    cols = TEAM_THEMES[_TEAM_THEME[0]]["colors"]
+    return cols[(max(int(team), 1) - 1) % len(cols)]
+
+
+def team_color(team):
+    return team_style(team)[0]
+
+
+def mix(c1, c2, t):
+    """c1 을 t(0~1) 만큼, c2 를 나머지만큼 섞은 색 (은은한 배경 만들 때)"""
+    a = [int(c1[i:i + 2], 16) for i in (1, 3, 5)]
+    b = [int(c2[i:i + 2], 16) for i in (1, 3, 5)]
+    return "#%02x%02x%02x" % tuple(round(a[i] * t + b[i] * (1 - t)) for i in range(3))
 
 # 화면 색 (한곳에서 바꾸면 전체가 바뀐다)
 PRIMARY = "#2f6fed"
@@ -713,6 +746,17 @@ class SettingsDialog:
             "    기준일: 2026-11-19 / 순서: 2,3,1\n"
             "하루에 한 팀씩 돌아가는 방식이 아니면 순서를 길게 적으면 됩니다.\n"
             "    예) 2일씩 근무: 1,1,2,2,3,3")).grid(row=4, column=0, columnspan=2, sticky="w", pady=(12, 0))
+        ttk.Label(p, text="🎨 근무팀 색깔", font=(FONT, 10, "bold")).grid(row=5, column=0, columnspan=2, sticky="w", pady=(14, 4))
+        self.team_theme = tk.StringVar(value=st.get("team_theme", "기본") if st.get("team_theme") in TEAM_THEMES else "기본")
+        for i, (tname, td) in enumerate(TEAM_THEMES.items()):
+            rowf = ttk.Frame(p)
+            rowf.grid(row=6 + i, column=0, columnspan=2, sticky="w", padx=14, pady=1)
+            ttk.Radiobutton(rowf, text="%s  (%s)" % (tname, td["desc"]), value=tname, variable=self.team_theme, width=22).pack(side="left")
+            for n_, (fc, oc, _d) in enumerate(td["colors"][:3], start=1):
+                tk.Label(rowf, text="%d팀" % n_, bg=fc, fg=oc, font=(FONT, 9, "bold"), padx=8, pady=2).pack(side="left", padx=2)
+        self.team_tint = tk.BooleanVar(value=bool(st.get("team_tint", False)))
+        ttk.Checkbutton(p, text="달력 칸 배경에도 근무팀 색을 은은하게 칠하기", variable=self.team_tint).grid(
+            row=9, column=0, columnspan=2, sticky="w", padx=14, pady=(8, 0))
 
         # ---- 알림
         p = page(" ⏰ 기한 알림 ")
@@ -871,6 +915,7 @@ class SettingsDialog:
             "widget_flash": self.flash_var.get(),
             "watch_downloads": self.dl_on.get(), "download_dir": dl,
             "widgets": {"desk": self.w_desk.get(), "list": self.w_list.get()},
+            "team_theme": self.team_theme.get(), "team_tint": self.team_tint.get(),
             "shared_dir": share, "rename_template": self.tpl_var.get(), "rename_date_fmt": self.datefmt_var.get(),
         })
         st.pop("clip_watch", None)
@@ -1062,6 +1107,64 @@ class Toast:
 #  일정 설정 / 메모 창 (일정을 더블클릭하거나, 날짜 빈 곳을 더블클릭하면 열린다)
 #    달력에 보일 글자 · 날짜 · 시간 · 구분 · 색깔 · 반복(메모) · 메모 · 완료(가운데 줄)
 # ══════════════════════════════════════════════════════════════
+class DocPicker:
+    """메모에 연결할 공문을 달력에 올린 공문 중에서 고르는 창 (여러 개 고를 수 있다)"""
+
+    def __init__(self, app, parent, on_pick, exclude=()):
+        self.app, self.on_pick = app, on_pick
+        self.docs = [e for e in core.doc_list(app.store.events) if core.link_key(e) not in set(exclude)]
+        win = self.win = tk.Toplevel(parent)
+        win.title("관련 공문 고르기")
+        win.geometry("760x460")
+        win.configure(bg=BG)
+        win.transient(parent)
+        top = ttk.Frame(win, padding=(12, 12, 12, 6))
+        top.pack(fill="x")
+        ttk.Label(top, text="🔍").pack(side="left")
+        self.q = tk.StringVar()
+        ent = ttk.Entry(top, textvariable=self.q, width=44)
+        ent.pack(side="left", padx=8)
+        ent.focus_set()
+        self.q.trace_add("write", lambda *_: self.refresh())
+        ttk.Label(top, text="제목 · 문서번호 · 기관  (Ctrl/Shift 로 여러 개)", style="Sub.TLabel").pack(side="left")
+        frame = ttk.Frame(win)
+        frame.pack(fill="both", expand=True, padx=12)
+        cols = ("date", "title", "docno")
+        self.tree = ttk.Treeview(frame, columns=cols, show="headings", selectmode="extended")
+        for col, text, width in zip(cols, ["날짜", "공문 제목", "문서번호"], [95, 470, 150]):
+            self.tree.heading(col, text=text)
+            self.tree.column(col, width=width, anchor="w", stretch=col == "title")
+        sb = ttk.Scrollbar(frame, orient="vertical", command=self.tree.yview)
+        self.tree.configure(yscrollcommand=sb.set)
+        self.tree.pack(side="left", fill="both", expand=True)
+        sb.pack(side="right", fill="y")
+        self.tree.bind("<Double-1>", lambda e: self.ok())
+        bar = ttk.Frame(win, padding=12)
+        bar.pack(fill="x")
+        self.cnt = ttk.Label(bar, text="", style="Sub.TLabel")
+        self.cnt.pack(side="left")
+        ttk.Button(bar, text="연결하기", style="Accent.TButton", command=self.ok).pack(side="right")
+        ttk.Button(bar, text="취소", command=win.destroy).pack(side="right", padx=6)
+        win.bind("<Escape>", lambda e: win.destroy())
+        win.bind("<Return>", lambda e: self.ok())
+        self.refresh()
+
+    def refresh(self):
+        words = [_w for _w in self.q.get().split() if _w]
+        self.shown = [e for e in self.docs if all(w in " ".join([e.get("title", ""), e.get("doc_no", ""), e.get("org", "")])
+                                                  for w in words)]
+        self.tree.delete(*self.tree.get_children())
+        for i, e in enumerate(self.shown[:300]):
+            self.tree.insert("", "end", iid=str(i), values=(e["date"], e["title"], e.get("doc_no", "")))
+        self.cnt.config(text="공문 %d건" % len(self.shown))
+
+    def ok(self):
+        picked = [core.make_link(self.shown[int(i)]) for i in self.tree.selection()]
+        if picked:
+            self.on_pick(picked)
+        self.win.destroy()
+
+
 class EventDialog:
     def __init__(self, app, ev=None, day=None):
         self.app, self.ev = app, ev
@@ -1131,8 +1234,25 @@ class EventDialog:
         self.memo.grid(row=6, column=1, columnspan=5, sticky="we", padx=(8, 0), pady=(10, 0))
         self.memo.insert("1.0", src.get("memo", ""))
 
+        # ---- 관련 공문 (메모만)
+        self.links = [dict(x) for x in (src.get("links") or [])]
+        self.link_list = None
+        if is_memo:
+            ttk.Label(box, text="🔗 관련 공문").grid(row=7, column=0, sticky="nw", pady=(10, 0))
+            lf = ttk.Frame(box)
+            lf.grid(row=7, column=1, columnspan=5, sticky="we", padx=(8, 0), pady=(10, 0))
+            self.link_list = listbox(lf, height=3, font=(FONT, 9))
+            self.link_list.pack(side="left", fill="x", expand=True)
+            lb_ = ttk.Frame(lf)
+            lb_.pack(side="left", padx=(6, 0))
+            ttk.Button(lb_, text="＋ 달력의 공문", command=self.add_doc_link).pack(fill="x")
+            ttk.Button(lb_, text="＋ 파일", command=self.add_file_link).pack(fill="x", pady=2)
+            ttk.Button(lb_, text="빼기", command=self.remove_link).pack(fill="x")
+            self.link_list.bind("<Double-1>", lambda e: self.open_link())
+            self.refresh_links()
+
         done = tk.Frame(box, bg="#eef7f0" if self.done_var.get() else "#f6f7f9", padx=10, pady=6)
-        done.grid(row=7, column=0, columnspan=6, sticky="we", pady=(12, 0))
+        done.grid(row=8, column=0, columnspan=6, sticky="we", pady=(12, 0))
         done_text = "✔ 완료  (달력에 가운데 줄을 긋고, 기한 알림을 멈춥니다)"
         if ev and ev.get("series"):
             d0 = dt.date.fromisoformat(ev["date"])
@@ -1149,7 +1269,7 @@ class EventDialog:
         self.done_var.trace_add("write", recolor)
 
         bar = ttk.Frame(box)
-        bar.grid(row=8, column=0, columnspan=6, sticky="we", pady=(14, 0))
+        bar.grid(row=9, column=0, columnspan=6, sticky="we", pady=(14, 0))
         ttk.Button(bar, text="저장", style="Accent.TButton", command=self.save).pack(side="right")
         ttk.Button(bar, text="취소", command=win.destroy).pack(side="right", padx=6)
         if not new:
@@ -1160,6 +1280,45 @@ class EventDialog:
         win.bind("<Control-Return>", lambda e: self.save())
         ent.focus_set()
         ent.select_range(0, "end")
+
+    # ---- 관련 공문 연결 -------------------------------------------------------
+    def refresh_links(self):
+        self.link_list.delete(0, "end")
+        for lk in self.links:
+            self.link_list.insert("end", ("📄 " if lk.get("key") else "📎 ") + lk.get("title", "") +
+                                  (("  (%s)" % lk["doc_no"]) if lk.get("doc_no") else ""))
+        if not self.links:
+            self.link_list.insert("end", "  (연결한 공문 없음 - 오른쪽 버튼으로 추가)")
+            self.link_list.itemconfig("end", fg="#9aa0aa")
+
+    def add_doc_link(self):
+        have = [lk["key"] for lk in self.links if lk.get("key")]
+        if not core.doc_list(self.app.store.events):
+            messagebox.showinfo("안내", "달력에 올린 공문이 아직 없어요.\n[＋ 공문 추가]로 먼저 올리거나 [＋ 파일]로 연결하세요.", parent=self.win)
+            return
+
+        def got(items):
+            self.links.extend(items)
+            self.refresh_links()
+        DocPicker(self.app, self.win, got, exclude=have)
+
+    def add_file_link(self):
+        path = filedialog.askopenfilename(parent=self.win, title="연결할 공문 파일",
+                                          filetypes=[("공문 파일", "*.pdf *.hwpx *.hwp *.txt *.docx"), ("모든 파일", "*.*")])
+        if path:
+            self.links.append({"file": path, "title": os.path.basename(path)})
+            self.refresh_links()
+
+    def remove_link(self):
+        sel = self.link_list.curselection()
+        if sel and sel[0] < len(self.links):
+            del self.links[sel[0]]
+            self.refresh_links()
+
+    def open_link(self):
+        sel = self.link_list.curselection()
+        if sel and sel[0] < len(self.links):
+            self.app.open_link(self.links[sel[0]])
 
     # ---- 반복 설정 칸 ---------------------------------------------------------
     def build_repeat(self, box, r):
@@ -1308,6 +1467,7 @@ class EventDialog:
                   "memo": self.memo.get("1.0", "end").strip()}
         if self.is_memo:
             fields["repeat"] = rule
+            fields["links"] = self.links
         store, ev, master = self.app.store, self.ev, self.master
         if ev is None:                                  # 새 메모
             new = dict(fields, title=label, label="", done=done and not rule,
@@ -1636,9 +1796,13 @@ class WidgetWindow:
         self.win.configure(bg=self.BG)
         self.topmost = bool(self.cfg.get("topmost", True))
         self.alpha = float(self.cfg.get("alpha", 0.92))
-        w, h = int(self.cfg.get("w", 300)), int(self.cfg.get("h", 420))
-        x, y = int(self.cfg.get("x", 60)), int(self.cfg.get("y", 60))
+        screen = gs.virtual_screen() or (0, 0, self.win.winfo_screenwidth(), self.win.winfo_screenheight())
+        x, y, w, h = gs.fit_window(int(self.cfg.get("x", 60)), int(self.cfg.get("y", 60)),
+                                   int(self.cfg.get("w", 300)), int(self.cfg.get("h", 420)), screen)
         self.win.geometry("%dx%d+%d+%d" % (w, h, x, y))
+        self._ready, self._cfg_job = False, None
+        self.win.after(800, lambda: setattr(self, "_ready", True))
+        self.win.bind("<Configure>", lambda e: self.cfg_changed() if e.widget is self.win else None)
         self.apply_window_attrs()
         self._drag = (0, 0)
         self._job = None
@@ -1659,8 +1823,11 @@ class WidgetWindow:
             if text == "📌":
                 self.pin_lb = b
 
+        self.drop_ok = gs.enable_file_drop(self.win, app.on_drop)    # 공문 PDF 를 끌어다 놓으면 등록
+        tk.Label(self.win, text="📥 PDF 를 끌어다 놓으면 공문 등록", font=(FONT, 8), fg=self.SUB, bg=self.BG).pack(
+            side="bottom", anchor="w", padx=10, pady=(0, 6))
         self.body = tk.Frame(self.win, bg=self.BG)
-        self.body.pack(fill="both", expand=True, padx=8, pady=(6, 14))
+        self.body.pack(fill="both", expand=True, padx=8, pady=(6, 4))
 
         grip = tk.Label(self.win, text="◢", font=(FONT, 9), fg=self.SUB, bg=self.BG, cursor="sizing")
         grip.place(relx=1.0, rely=1.0, anchor="se")
@@ -1707,11 +1874,27 @@ class WidgetWindow:
         self.apply_window_attrs()
         self.save_cfg()
 
+    def cfg_changed(self):
+        """창을 옮기거나 크기를 바꾸면 잠시 뒤에 위치를 저장한다 (끌기가 끝나기를 기다림)"""
+        if not self._ready:
+            return
+        if self._cfg_job:
+            self.win.after_cancel(self._cfg_job)
+        self._cfg_job = self.win.after(600, self.save_cfg)
+
     def save_cfg(self):
-        self.cfg.update({"x": self.win.winfo_x(), "y": self.win.winfo_y(),
-                         "w": self.win.winfo_width(), "h": self.win.winfo_height(),
+        self._cfg_job = None
+        if not self.win.winfo_exists():
+            return
+        x, y = self.win.winfo_x(), self.win.winfo_y()
+        if x <= -30000 or y <= -30000:                  # 최소화된 창의 가짜 좌표(-32000)는 저장하지 않는다
+            return
+        self.cfg.update({"x": x, "y": y, "w": self.win.winfo_width(), "h": self.win.winfo_height(),
                          "topmost": self.topmost, "alpha": round(self.alpha, 2)})
-        core.save_settings(self.app.settings)
+        try:
+            core.patch_settings({"widget": dict(self.cfg)})         # 다른 설정은 건드리지 않고 이것만 저장
+        except OSError:
+            pass
 
     # ---- 이동·크기 조절 --------------------------------------------------
     def start_move(self, e):
@@ -1738,7 +1921,7 @@ class WidgetWindow:
         self.date_lb.config(text="%d월 %d일 (%s)" % (today.month, today.day, "월화수목금토일"[today.weekday()]))
         team = core.team_for(today, app.settings)
         if team:
-            self.team_lb.config(text="%d팀 근무" % team, bg=TEAM_COLORS.get(team, "#7a4fd6"))
+            self.team_lb.config(text="%d팀 근무" % team, bg=team_style(team)[0], fg=team_style(team)[1])
         else:
             self.team_lb.config(text="팀 미설정", bg="#777777")
         self.pin_lb.config(fg=self.FG if self.topmost else self.SUB)
@@ -1812,6 +1995,7 @@ class DeskCalendar:
                       late="#e5484d", soon="#e09100", normal="#2f6fed", btn="#9aa0aa", btn_hover="#1f2430"),
     }
     DAYS = ["일", "월", "화", "수", "목", "금", "토"]
+    DROP_HINT = "📥 공문 PDF 를 여기에 끌어다 놓으면 등록돼요"
 
     def __init__(self, app):
         self.app = app
@@ -1824,12 +2008,13 @@ class DeskCalendar:
         win = self.win = tk.Toplevel(app.root)
         win.overrideredirect(True)
         win.configure(bg=self.th["bg"])
-        sw, sh = win.winfo_screenwidth(), win.winfo_screenheight()
-        w = min(int(self.cfg.get("w", 940)), sw)
-        h = min(int(self.cfg.get("h", 660)), sh)
-        x = min(max(int(self.cfg.get("x", 40)), -w + 80), sw - 80)
-        y = min(max(int(self.cfg.get("y", 60)), 0), sh - 60)
+        screen = gs.virtual_screen() or (0, 0, win.winfo_screenwidth(), win.winfo_screenheight())   # 모니터 여러 개면 전체 영역
+        x, y, w, h = gs.fit_window(int(self.cfg.get("x", 40)), int(self.cfg.get("y", 60)),
+                                   int(self.cfg.get("w", 940)), int(self.cfg.get("h", 660)), screen)
         win.geometry("%dx%d+%d+%d" % (w, h, x, y))
+        self._ready, self._cfg_job = False, None
+        win.after(800, lambda: setattr(self, "_ready", True))
+        win.bind("<Configure>", lambda e: self.cfg_changed() if e.widget is win else None)
         self.alpha = float(self.cfg.get("alpha", 0.9))
 
         th = self.th
@@ -1853,7 +2038,8 @@ class DeskCalendar:
             wdg.bind("<ButtonRelease-1>", self.end_move)
             wdg.bind("<Double-1>", lambda e: self.go_today())
 
-        self.hover = tk.Label(win, text="", font=(FONT, 9), fg=th["sub"], bg=th["bg"], anchor="w", padx=16)
+        self.drop_ok = gs.enable_file_drop(win, app.on_drop)     # 공문 PDF 를 끌어다 놓으면 등록
+        self.hover = tk.Label(win, text=self.DROP_HINT, font=(FONT, 9), fg=th["sub"], bg=th["bg"], anchor="w", padx=16)
         self.hover.pack(side="bottom", fill="x", pady=(0, 4))
         self.cv = tk.Canvas(win, bg=th["bg"], highlightthickness=0)
         self.cv.pack(fill="both", expand=True, padx=8)
@@ -1866,7 +2052,7 @@ class DeskCalendar:
         cv = self.cv
         cv.bind("<Configure>", lambda e: self.schedule_redraw())
         cv.bind("<Motion>", self.on_motion)
-        cv.bind("<Leave>", lambda e: self.hover.config(text=""))
+        cv.bind("<Leave>", lambda e: self.hover.config(text=self.DROP_HINT))
         cv.bind("<ButtonPress-1>", self.on_press)
         cv.bind("<B1-Motion>", self.on_drag)
         cv.bind("<ButtonRelease-1>", self.on_release)
@@ -1918,10 +2104,27 @@ class DeskCalendar:
         self.apply_mode()
         self.save_cfg()
 
+    def cfg_changed(self):
+        """창을 옮기거나 크기를 바꾸면 잠시 뒤에 위치를 저장한다 (끌기가 끝나기를 기다림)"""
+        if not self._ready:
+            return
+        if self._cfg_job:
+            self.win.after_cancel(self._cfg_job)
+        self._cfg_job = self.win.after(600, self.save_cfg)
+
     def save_cfg(self):
-        self.cfg.update({"x": self.win.winfo_x(), "y": self.win.winfo_y(), "w": self.win.winfo_width(),
-                         "h": self.win.winfo_height(), "alpha": round(self.alpha, 2)})
-        core.save_settings(self.app.settings)
+        self._cfg_job = None
+        if not self.win.winfo_exists():
+            return
+        x, y = self.win.winfo_x(), self.win.winfo_y()
+        if x <= -30000 or y <= -30000:                  # 최소화된 창의 가짜 좌표(-32000)는 저장하지 않는다
+            return
+        self.cfg.update({"x": x, "y": y, "w": self.win.winfo_width(), "h": self.win.winfo_height(),
+                         "alpha": round(self.alpha, 2)})
+        try:
+            core.patch_settings({"desk_cal": dict(self.cfg)})        # 다른 설정은 건드리지 않고 이것만 저장
+        except OSError:
+            pass
 
     # ---- 이동·크기 ------------------------------------------------------------
     def start_move(self, e):
@@ -2015,6 +2218,7 @@ class DeskCalendar:
 
         weeks = calendar.Calendar(firstweekday=6).monthdatescalendar(y, m)
         show_wk, show_lunar = cfg.get("weeknum", False), cfg.get("lunar", False)
+        cfg_tint = self.app.settings.get("team_tint", False)
         left, top = (26 if show_wk else 0), 28
         cw, ch = (W - left) / 7, (H - top) / len(weeks)
         size = 10 if ch >= 90 and cw >= 110 else 9
@@ -2046,6 +2250,9 @@ class DeskCalendar:
                 hol = info["holiday"]
                 # 마우스를 받기 위한 칸 (배경과 같은 색)
                 cv.create_rectangle(x0, y0 + 1, x0 + cw, y0 + ch, fill=th["bg"], outline="", tags=tag)
+                if cfg_tint and in_m and core.team_for(d, s):         # 근무팀 색을 칸 배경에 은은하게
+                    self.rrect(x0 + 3, y0 + 4, x0 + cw - 3, y0 + ch - 3, 8,
+                               fill=mix(team_style(core.team_for(d, s))[0], th["bg"], 0.16), outline="", tags=tag)
                 if d == self.sel and d != today:
                     self.rrect(x0 + 3, y0 + 4, x0 + cw - 3, y0 + ch - 3, 8, fill=th["sel"], outline="", tags=tag)
 
@@ -2068,11 +2275,14 @@ class DeskCalendar:
                 if label:
                     cv.create_text(lx, ny + 2, text=self.elide(label, f_small, x0 + cw - lx - team_w - 4), anchor="nw",
                                    font=f_small, fill=lc if in_m else th["dim"], tags=tag)
-                if tm and in_m:                         # 근무팀: 작은 글자, 내 팀만 강조색
+                if tm and in_m:                         # 근무팀: 팀 색 알약 (내 팀은 굵은 글자 + 테두리)
                     mine = tm == s.get("my_team")
-                    cv.create_text(x0 + cw - 10, ny + 2, text="%d팀" % tm, anchor="ne",
-                                   font=f_head if mine else f_small,
-                                   fill=TEAM_COLORS.get(tm, th["accent"]) if mine else th["dim"], tags=tag)
+                    fill_c, on_c, _dk = team_style(tm)
+                    fnt_t = f_head if mine else f_small
+                    tw = fnt_t.measure("%d팀" % tm)
+                    self.rrect(x0 + cw - 12 - tw - 4, ny + 1, x0 + cw - 8, ny + 5 + fnt_t.metrics("linespace"), 7,
+                               fill=fill_c, outline=th["fg"] if mine else "", width=1, tags=tag)
+                    cv.create_text(x0 + cw - 10, ny + 3, text="%d팀" % tm, anchor="ne", font=fnt_t, fill=on_c, tags=tag)
 
                 evs = by_date.get(iso, [])
                 ey = ny + num_h + 8
@@ -2128,7 +2338,7 @@ class DeskCalendar:
             extra = " · ".join(x for x in (info["holiday"], info["term"], ("음력 " + info["lunar"]) if info["lunar"] else "") if x)
             self.hover.config(text="%d월 %d일 %s   (더블클릭 = 메모 추가)" % (d.month, d.day, extra))
         else:
-            self.hover.config(text="")
+            self.hover.config(text=self.DROP_HINT)
 
     def day_at(self, x_root, y_root):
         """화면 좌표 아래의 날짜"""
@@ -2268,6 +2478,7 @@ class App:
         self.root.minsize(1000, 640)
         setup_style(self.root)
         self.settings = core.load_settings()
+        set_team_theme(self.settings.get("team_theme"))
         self.share_ok = core.set_shared_dir(self.settings.get("shared_dir", "")) or not self.settings.get("shared_dir")
         self.store = core.Store(core.shared_path("공문일정.json"))
         self.lex = core.load_lexicon(core.data_path("용어사전.txt"))
@@ -2276,7 +2487,7 @@ class App:
         self.selected = self.today
         self.day_events = []                            # 오른쪽 목록에 보이는 일정들
         self.soon_events = []
-        self.rel_events = []
+        self.rel_items = []
         self.status_win = self.ach_win = self.search_win = self.widget = self.deskcal = None
         self._grid_key = None                           # 달력을 마지막으로 그린 조건 (같으면 다시 안 그린다)
         self._cells = {}
@@ -2540,7 +2751,7 @@ class App:
         team = core.team_for(self.today, self.settings)
         if team:
             self.team_var.set("오늘 근무 %d팀" % team)
-            self.team_label.config(bg=TEAM_COLORS.get(team, "#7a4fd6"))
+            self.team_label.config(bg=team_style(team)[0], fg=team_style(team)[1])
         else:
             self.team_var.set("근무팀 설정하기 ›")
             self.team_label.config(bg="#5b7bd6")
@@ -2550,6 +2761,10 @@ class App:
         is_sel = day == self.selected
         is_today = day == self.today
         bg = "#eef4ff" if is_today else (CARD if in_month else "#f6f7f9")
+        if in_month and not is_today and self.settings.get("team_tint"):          # 근무팀 색을 칸 배경에 은은하게
+            t_ = core.team_for(day, self.settings)
+            if t_:
+                bg = mix(team_style(t_)[0], "#ffffff", 0.13)
         cell = tk.Frame(self.cal_frame, bg=bg, highlightthickness=2 if is_sel else 1,
                         highlightbackground=PRIMARY if is_sel else "#e3e7ee")
         cell.grid(row=row, column=col, sticky="nsew", padx=1, pady=1)
@@ -2574,10 +2789,10 @@ class App:
 
         team = core.team_for(day, self.settings)
         if team:
-            color = TEAM_COLORS.get(team, "#7a4fd6")
+            fill, on, _dk = team_style(team)
             mine = team == self.settings.get("my_team")
-            tl = tk.Label(head, text="%d팀" % team, font=(FONT, 8, "bold"),
-                          fg="#ffffff" if mine else color, bg=color if mine else bg, padx=3)
+            tl = tk.Label(head, text="%d팀" % team, font=(FONT, 8, "bold" if mine else "normal"), fg=on, bg=fill, padx=4,
+                          highlightthickness=1 if mine else 0, highlightbackground="#1f2430")
             tl.pack(side="right", padx=3)
             widgets.append(tl)
 
@@ -2668,6 +2883,8 @@ class App:
                 t.insert("end", "★ 내 실적" + ((" · " + ev["note"]) if ev.get("note") else "") + "\n", "meta")
             if ev.get("repeat"):
                 t.insert("end", "🔁 " + core.describe_repeat(ev["repeat"]) + "\n", "meta")
+            if ev.get("links"):
+                t.insert("end", "🔗 관련 공문: " + " / ".join(lk.get("title", "") for lk in ev["links"]) + "\n", "meta")
             if ev.get("memo"):
                 t.insert("end", "\n📝 " + ev["memo"] + "\n", "memo")
             if ev.get("kind") != "메모":
@@ -2682,11 +2899,21 @@ class App:
         t.config(state="disabled")
         t.yview_moveto(0)
 
-        self.rel_events = core.related_events(self.store.events, ev) if ev else []
+        self.rel_items = []                             # (보일 글자, 더블클릭하면 할 일)
+        if ev:
+            for e in core.linked_events(self.store.events, ev):        # 메모에서 직접 연결한 공문 / 나를 연결한 메모
+                mark = "📝" if e.get("kind") == "메모" else "🔗"
+                self.rel_items.append(("%s %s  %s" % (mark, e["date"][5:], ev_label(e)), lambda e=e: self.show_event(e)))
+            for lk in ev.get("links") or []:
+                if lk.get("file"):
+                    self.rel_items.append(("📎 %s" % lk.get("title", ""), lambda lk=lk: self.open_link(lk)))
+            for e in core.related_events(self.store.events, ev):       # 문서번호로 이어진 공문
+                self.rel_items.append(("%s  %s  %s" % (e["date"][5:], e.get("doc_no", ""), ev_label(e)),
+                                       lambda e=e: self.show_event(e)))
         self.rel_list.delete(0, "end")
-        for e in self.rel_events:
-            self.rel_list.insert("end", "%s  %s  %s" % (e["date"][5:], e.get("doc_no", ""), ev_label(e)))
-        if ev and not self.rel_events:
+        for text, _act in self.rel_items:
+            self.rel_list.insert("end", text)
+        if ev and not self.rel_items:
             refs = ev.get("refs") or []
             self.rel_list.insert("end", ("  (달력에 없음: " + ", ".join(refs[:3]) + ")") if refs else "  (관련 공문 없음)")
             self.rel_list.itemconfig("end", fg="#9aa0aa")
@@ -2728,8 +2955,25 @@ class App:
 
     def on_rel_double(self, e):
         i = self.rel_list.nearest(e.y)
-        if 0 <= i < len(self.rel_events):
-            self.show_event(self.rel_events[i])
+        if 0 <= i < len(self.rel_items):
+            self.rel_items[i][1]()
+
+    def open_link(self, lk):
+        """메모에 연결한 공문을 연다 (달력의 공문이면 그 공문 일정으로, 파일이면 파일을)"""
+        if lk.get("file"):
+            if os.path.isfile(lk["file"]):
+                try:
+                    open_with_default_app(lk["file"])
+                except OSError as e:
+                    messagebox.showerror("열기 실패", str(e), parent=self.root)
+            else:
+                messagebox.showinfo("안내", "파일을 찾지 못했습니다.\n%s" % lk["file"], parent=self.root)
+            return
+        for e in self.store.events:
+            if core.link_key(e) == lk.get("key") and e.get("kind") != "메모":
+                self.show_event(e)
+                return
+        messagebox.showinfo("안내", "연결한 공문이 달력에서 지워졌어요.", parent=self.root)
 
     def jump_to_soon(self, _e):
         sel = self.soon_list.curselection()
@@ -2987,10 +3231,10 @@ class App:
 
     # ---- 창 열기 ------------------------------------------------------------
     def open_add_dialog(self, path=None):
-        AddDialog(self, path=path)
+        self.bring_front(AddDialog(self, path=path).win)
 
     def open_batch(self, paths=()):
-        BatchDialog(self, paths)
+        self.bring_front(BatchDialog(self, paths).win)
 
     def open_settings(self, tab="team"):
         SettingsDialog(self, tab)
@@ -3048,12 +3292,24 @@ class App:
         self.status_win = StatusWindow(self)
 
     def on_drop(self, paths):
-        """큰 달력 창에 파일을 끌어 놓으면: 하나면 공문 추가, 여러 개면 한꺼번에 등록"""
+        """큰 달력·위젯에 파일을 끌어 놓으면: 하나면 공문 추가, 여러 개면 한꺼번에 등록"""
         files = gs.expand_paths(paths)
         if len(files) == 1:
             self.open_add_dialog(path=files[0])
         elif files:
             self.open_batch(files)
+        else:
+            Toast(self, "📥 공문 파일이 아니에요", "PDF · HWPX · TXT 파일(또는 그런 파일이 든 폴더)을 놓아 주세요.", timeout=5000)
+
+    def bring_front(self, win):
+        """창을 맨 앞으로 (위젯에 끌어 놓았을 때 큰 창이 숨겨져 있어도 공문 추가 창이 보이게)"""
+        try:
+            win.lift()
+            win.attributes("-topmost", True)
+            win.after(400, lambda: win.winfo_exists() and win.attributes("-topmost", False))
+            win.focus_force()
+        except tk.TclError:
+            pass
 
     def on_close_main(self):
         """트레이 아이콘이 있으면 창만 숨기고 계속 실행한다. 없으면 위젯이 떠 있을 때만 숨긴다."""
@@ -3120,10 +3376,23 @@ class App:
         elif cmd == "settings":
             self.show_main()
             self.open_settings()
+        elif cmd == "show":                             # 프로그램을 또 켰을 때: 이미 켜진 쪽을 보여 준다
+            self.show_main()
+        elif cmd == "widgets":                          # 윈도우 시작 때 또 켜진 경우: 위젯만
+            self.open_widget()
         elif cmd == "quit":
             self.quit_app()
 
+    def save_widget_positions(self):
+        for w in (self.deskcal, self.widget):
+            if w is not None:
+                try:
+                    w.save_cfg()
+                except Exception:
+                    pass
+
     def quit_app(self):
+        self.save_widget_positions()
         self.tray_ok = False
         try:
             self.tray.stop()
@@ -3135,6 +3404,7 @@ class App:
     def apply_settings(self, first=False, share_changed=False, desk_changed=False):
         s = self.settings
         self._srev += 1
+        set_team_theme(s.get("team_theme"))
         if share_changed:
             self.switch_store()
         dl = s.get("download_dir") or gs.default_download_dir()
@@ -3251,6 +3521,11 @@ def selftest():
         app.root.update()
         out.append("widgets ok (desktop pinned=%s)" % app.deskcal.pinned)
         out.append("tray ok=%s %s" % (app.tray_ok, app.tray.error if app.tray else ""))
+        out.append("widget drop desk=%s list=%s" % (app.deskcal.drop_ok, app.widget.drop_ok))
+        first = gs.acquire_single_instance("Local\\GongmunSelfTestMutex", signal=False)
+        second = gs.acquire_single_instance("Local\\GongmunSelfTestMutex", signal=False)
+        out.append("single instance first=%s second=%s (정상: True/False)" % (first, second))
+        out.append("virtual screen=%s" % (gs.virtual_screen(),))
         if app.tray_ok:
             app.handle_tray("desk"); app.root.update()          # 트레이 메뉴 명령도 눌러 본다
             app.handle_tray("desk"); app.root.update()
@@ -3282,5 +3557,7 @@ def selftest():
 if __name__ == "__main__":
     if "--selftest" in sys.argv:
         selftest()
+    elif not gs.acquire_single_instance(widgets_only="--widget" in sys.argv):
+        sys.exit(0)                                     # 이미 켜져 있다: 그쪽을 보여 주고 이 프로그램은 끝낸다
     else:
         App(widget_only="--widget" in sys.argv).run()   # python gongmun_calendar.py --widget  : 위젯만 실행

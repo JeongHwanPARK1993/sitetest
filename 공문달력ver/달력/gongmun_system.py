@@ -259,6 +259,66 @@ def send_to_bottom(win):
 
 
 # ──────────────────────────────────────────────────────────────
+# 4-2. 화면 범위 (모니터가 여러 개여도 창이 제자리에 오게)
+# ──────────────────────────────────────────────────────────────
+def virtual_screen():
+    """모든 모니터를 합친 영역 (x, y, 너비, 높이). 윈도우가 아니면 None"""
+    if not IS_WIN:
+        return None
+    try:
+        import ctypes
+        g = ctypes.windll.user32.GetSystemMetrics
+        x, y, w, h = g(76), g(77), g(78), g(79)         # SM_XVIRTUALSCREEN, YVIRTUALSCREEN, CXVIRTUALSCREEN, CYVIRTUALSCREEN
+        return (x, y, w, h) if w > 0 and h > 0 else None
+    except Exception:
+        return None
+
+
+def fit_window(x, y, w, h, screen):
+    """창이 화면 영역(screen=(x,y,w,h)) 안에 적어도 일부는 보이게 위치·크기를 고른다"""
+    sx, sy, sw, sh = screen
+    w, h = min(w, sw), min(h, sh)
+    x = min(max(x, sx - w + 80), sx + sw - 80)           # 창의 80픽셀은 항상 화면 안에 남긴다
+    y = min(max(y, sy), sy + sh - 60)
+    return x, y, w, h
+
+
+# ──────────────────────────────────────────────────────────────
+# 4-3. 한 번에 하나만 실행 (두 번 켜면 두 번째는 이미 켜진 쪽을 보여 주고 끝낸다)
+# ──────────────────────────────────────────────────────────────
+_MUTEX = []                                             # 핸들을 붙잡아 둔다 (프로그램이 끝날 때까지 유지)
+WM_SHOW_MAIN, WM_SHOW_WIDGETS = 0x8003, 0x8004          # 이미 켜진 프로그램에 보내는 신호
+
+
+def acquire_single_instance(name="Local\\GongmunCalendarSingleInstance", widgets_only=False, signal=True):
+    """처음 켠 프로그램이면 True. 이미 켜져 있으면 그쪽에 '보여 줘' 신호를 보내고 False."""
+    if not IS_WIN:
+        return True
+    try:
+        import ctypes
+        from ctypes import wintypes
+        k = ctypes.WinDLL("kernel32", use_last_error=True)      # 오류 번호를 바로 읽을 수 있게
+        u = ctypes.windll.user32
+        k.CreateMutexW.argtypes = [wintypes.LPVOID, wintypes.BOOL, wintypes.LPCWSTR]
+        k.CreateMutexW.restype = wintypes.HANDLE
+        handle = k.CreateMutexW(None, False, name)
+        already = ctypes.get_last_error() == 183                # ERROR_ALREADY_EXISTS
+        _MUTEX.append(handle)
+        if not already:
+            return True
+        if signal:
+            u.FindWindowW.argtypes = [wintypes.LPCWSTR, wintypes.LPCWSTR]
+            u.FindWindowW.restype = wintypes.HWND
+            u.PostMessageW.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
+            hwnd = u.FindWindowW("GongmunTrayWindow", None)     # 이미 켜진 프로그램의 트레이 창
+            if hwnd:
+                u.PostMessageW(hwnd, WM_SHOW_WIDGETS if widgets_only else WM_SHOW_MAIN, 0, 0)
+        return False
+    except Exception:
+        return True                                     # 확인을 못 하면 그냥 켠다
+
+
+# ──────────────────────────────────────────────────────────────
 # 5. 트레이 아이콘 (작업표시줄 오른쪽 아래 작은 아이콘)
 #    왼쪽 클릭 = 달력 열기/숨기기, 오른쪽 클릭 = 메뉴 (위젯 켜고 끄기, 공문 추가, 설정, 종료)
 #    추가 설치 없이 윈도우 기본 기능(Shell_NotifyIcon)만 쓴다.
@@ -413,6 +473,12 @@ class TrayIcon:
                     cmd = self._show_menu()
                     if cmd:
                         self.commands.put(cmd)
+                return 0
+            if msg == WM_SHOW_MAIN:                     # 프로그램을 또 켠 경우: 이미 켜진 쪽을 보여 준다
+                self.commands.put("show")
+                return 0
+            if msg == WM_SHOW_WIDGETS:
+                self.commands.put("widgets")
                 return 0
             if msg == self.taskbar_created:
                 self._notify(0)

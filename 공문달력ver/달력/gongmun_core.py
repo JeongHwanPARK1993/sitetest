@@ -1195,7 +1195,7 @@ def export_ics(events, path):
 #    '패턴'은 기준일부터 하루에 한 칸씩 돌아가는 근무팀 목록입니다.
 #    예) 패턴 [1,2,3] , 기준일에 1팀 근무 -> 기준일 1팀, 다음날 2팀, 그다음 3팀, 다시 1팀 ...
 # ──────────────────────────────────────────────────────────────
-DEFAULT_SETTINGS = {"anchor_date": "", "pattern": [1, 2, 3], "my_team": 0}
+DEFAULT_SETTINGS = {"anchor_date": "", "pattern": [1, 2, 3], "my_team": 0, "team_theme": "기본", "team_tint": False}
 
 
 def load_settings():
@@ -1209,8 +1209,24 @@ def load_settings():
 
 
 def save_settings(st):
-    with open(data_path("설정.json"), "w", encoding="utf-8") as f:
+    path = data_path("설정.json")
+    tmp = path + ".tmp"                                 # 임시 파일에 쓴 뒤 바꿔치기 (저장 중 꺼져도 설정이 깨지지 않는다)
+    with open(tmp, "w", encoding="utf-8") as f:
         json.dump(st, f, ensure_ascii=False, indent=1)
+    os.replace(tmp, path)
+
+
+def patch_settings(patch):
+    """설정 파일을 다시 읽어서 patch 에 적은 것만 바꿔 저장한다.
+    (위젯 위치처럼 자주 바뀌는 값을 저장할 때 쓴다. 다른 값을 낡은 내용으로 덮어쓰지 않는다.)"""
+    st = load_settings()
+    for k, v in patch.items():
+        if isinstance(v, dict) and isinstance(st.get(k), dict):
+            st[k].update(v)
+        else:
+            st[k] = v
+    save_settings(st)
+    return st
 
 
 def parse_pattern(text):
@@ -1358,6 +1374,52 @@ def related_events(events, ev):
         key = e.get("group") or e["id"]
         if linked and key not in seen:
             seen.add(key)
+            out.append(e)
+    return out
+
+
+# ──────────────────────────────────────────────────────────────
+# 11-2. 메모에 '관련 공문' 연결
+#   메모의 "links" = [{"key": 공문묶음 id, "title": ..., "doc_no": ...}  (달력에 올린 공문)
+#                      {"file": 파일 경로, "title": 파일 이름}]            (파일만 연결)
+# ──────────────────────────────────────────────────────────────
+def link_key(ev):
+    """일정이 속한 '공문 한 건'을 가리키는 값 (같은 공문의 여러 날짜는 같은 값)"""
+    return ev.get("group") or ev.get("series") or ev["id"]
+
+
+def doc_list(events):
+    """연결할 수 있는 공문들 (메모·반복 제외, 공문 한 건당 가장 이른 일정 하나), 최근 순"""
+    seen = {}
+    for e in events:
+        if e.get("kind") == "메모" or e.get("repeat") or e.get("series"):
+            continue
+        k = link_key(e)
+        if k not in seen or e["date"] < seen[k]["date"]:
+            seen[k] = e
+    return sorted(seen.values(), key=lambda e: e["date"], reverse=True)
+
+
+def make_link(ev):
+    return {"key": link_key(ev), "title": ev.get("title", ""), "doc_no": ev.get("doc_no", "")}
+
+
+def linked_events(events, ev):
+    """ev 와 '관련 공문 연결'로 이어진 일정들: 내가 연결한 공문 + 나를 연결한 메모"""
+    out, seen = [], {link_key(ev)}
+    keys = [lk["key"] for lk in (ev.get("links") or []) if lk.get("key")]
+    for k in keys:
+        cand = [e for e in events if link_key(e) == k and e.get("kind") != "메모"]
+        if cand and k not in seen:
+            seen.add(k)
+            out.append(min(cand, key=lambda e: e["date"]))
+    me = link_key(ev)
+    for e in events:
+        if e.get("repeat") or e.get("series"):
+            if not e.get("repeat"):
+                continue
+        if any(lk.get("key") == me for lk in (e.get("links") or [])) and link_key(e) not in seen:
+            seen.add(link_key(e))
             out.append(e)
     return out
 
