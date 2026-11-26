@@ -6,6 +6,7 @@ on:
     paths:
       - "공문달력ver/달력/**"
       - "공문달력ver/검증/**"
+      - "공문달력ver/병아리대원/**"
       - "공문달력ver/사용설명.txt"
       - ".github/workflows/build-exe.yml"
   workflow_dispatch:
@@ -48,12 +49,41 @@ jobs:
           --exclude-module pypdf --exclude-module pdfplumber
           gongmun_calendar.py
 
+      - name: Build 병아리대원
+        run: dotnet build 공문달력ver/병아리대원/chick.csproj -c Release -o chick_out
+
+      - name: 병아리대원 시험 (달력 질문을 받아 대답하는지)
+        shell: python
+        run: |
+          import os, subprocess, time, sys, shutil
+          exe = os.path.abspath(os.path.join("chick_out", "병아리대원.exe"))
+          root = os.path.join(os.environ["APPDATA"], "병아리대원")
+          d = os.path.join(root, "달력연결")
+          os.makedirs(d, exist_ok=True)
+          with open(os.path.join(d, "inbox.txt"), "w", encoding="utf-8") as f:
+              f.write("test~D-1~0~000000\t삐약! 시험 질문이에요. 확인했어요?\n")
+          p = subprocess.Popen([exe])
+          time.sleep(80)                      # 말풍선은 60초 동안 대답이 없으면 닫히고 'ignore' 를 적는다
+          alive = p.poll() is None
+          out = os.path.join(d, "outbox.txt")
+          ans = open(out, encoding="utf-8-sig").read() if os.path.exists(out) else ""
+          err = os.path.join(root, "error.log")
+          errs = open(err, encoding="utf-8-sig").read() if os.path.exists(err) else ""
+          print("alive:", alive, "| outbox:", repr(ans), "| error.log:", errs[:3000])
+          p.kill()
+          shutil.rmtree(root, ignore_errors=True)
+          if not alive or "test~D-1~0~000000\tignore" not in ans or errs:
+              sys.exit(1)
+
       - name: Self test on Windows
         shell: python
         run: |
           import os, shutil, subprocess, sys
           dist = os.path.join("공문달력ver", "달력", "dist", "GongmunCalendar")
           os.replace(os.path.join(dist, "GongmunCalendar.exe"), os.path.join(dist, "업무보조달력.exe"))
+          os.makedirs(os.path.join(dist, "병아리대원"), exist_ok=True)
+          for f in ("병아리대원.exe", "병아리대원.exe.config"):
+              shutil.copy2(os.path.join("chick_out", f), os.path.join(dist, "병아리대원", f))
           test = os.path.join(os.environ["RUNNER_TEMP"], "selftest_app")
           shutil.copytree(dist, test)
           subprocess.run([os.path.join(test, "업무보조달력.exe"), "--selftest"], timeout=300)

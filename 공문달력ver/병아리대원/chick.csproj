@@ -1,0 +1,66 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <AssemblyName>병아리대원</AssemblyName>
+    <GenerateAssemblyInfo>False</GenerateAssemblyInfo>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net40</TargetFramework>
+    <LangVersion>12.0</LangVersion>
+    <AllowUnsafeBlocks>True</AllowUnsafeBlocks>
+    <ApplicationIcon>app.ico</ApplicationIcon>
+    <RootNamespace />
+    <Nullable>disable</Nullable>
+    <EnableDefaultEmbeddedResourceItems>false</EnableDefaultEmbeddedResourceItems>
+  </PropertyGroup>
+  <ItemGroup>
+    <EmbeddedResource Include="alert1.png" LogicalName="alert1.png" />
+    <EmbeddedResource Include="alert2.png" LogicalName="alert2.png" />
+    <EmbeddedResource Include="car1.png" LogicalName="car1.png" />
+    <EmbeddedResource Include="car2.png" LogicalName="car2.png" />
+    <EmbeddedResource Include="fall1.png" LogicalName="fall1.png" />
+    <EmbeddedResource Include="fly1.png" LogicalName="fly1.png" />
+    <EmbeddedResource Include="focus1.png" LogicalName="focus1.png" />
+    <EmbeddedResource Include="focus2.png" LogicalName="focus2.png" />
+    <EmbeddedResource Include="focus3.png" LogicalName="focus3.png" />
+    <EmbeddedResource Include="focus4.png" LogicalName="focus4.png" />
+    <EmbeddedResource Include="focus5.png" LogicalName="focus5.png" />
+    <EmbeddedResource Include="focus7.png" LogicalName="focus7.png" />
+    <EmbeddedResource Include="focus8.png" LogicalName="focus8.png" />
+    <EmbeddedResource Include="idle1.png" LogicalName="idle1.png" />
+    <EmbeddedResource Include="idle2.png" LogicalName="idle2.png" />
+    <EmbeddedResource Include="idle3.png" LogicalName="idle3.png" />
+    <EmbeddedResource Include="idle4.png" LogicalName="idle4.png" />
+    <EmbeddedResource Include="idle5.png" LogicalName="idle5.png" />
+    <EmbeddedResource Include="idle6.png" LogicalName="idle6.png" />
+    <EmbeddedResource Include="idle7.png" LogicalName="idle7.png" />
+    <EmbeddedResource Include="quiet1.png" LogicalName="quiet1.png" />
+    <EmbeddedResource Include="quiet2.png" LogicalName="quiet2.png" />
+    <EmbeddedResource Include="sleep1.png" LogicalName="sleep1.png" />
+    <EmbeddedResource Include="walk1.png" LogicalName="walk1.png" />
+    <EmbeddedResource Include="walk2.png" LogicalName="walk2.png" />
+    <EmbeddedResource Include="gift1.png" LogicalName="gift1.png" />
+    <EmbeddedResource Include="gift2.png" LogicalName="gift2.png" />
+    <EmbeddedResource Include="climb1.png" LogicalName="climb1.png" />
+    <EmbeddedResource Include="climb2.png" LogicalName="climb2.png" />
+    <EmbeddedResource Include="up1.png" LogicalName="up1.png" />
+    <EmbeddedResource Include="pose1.png" LogicalName="pose1.png" />
+    <EmbeddedResource Include="pose2.png" LogicalName="pose2.png" />
+    <EmbeddedResource Include="pose3.png" LogicalName="pose3.png" />
+    <EmbeddedResource Include="pose4.png" LogicalName="pose4.png" />
+    <EmbeddedResource Include="pose5.png" LogicalName="pose5.png" />
+    <EmbeddedResource Include="pose6.png" LogicalName="pose6.png" />
+    <EmbeddedResource Include="pose7.png" LogicalName="pose7.png" />
+    <EmbeddedResource Include="pose8.png" LogicalName="pose8.png" />
+    <EmbeddedResource Include="pose9.png" LogicalName="pose9.png" />
+    <EmbeddedResource Include="pose10.png" LogicalName="pose10.png" />
+    <EmbeddedResource Include="focus1.5.png" LogicalName="focus1.5.png" />
+    <EmbeddedResource Include="rest1.png" LogicalName="rest1.png" />
+  </ItemGroup>
+  <ItemGroup>
+    <Reference Include="System.Windows.Forms" />
+    <Reference Include="System.Drawing" />
+    <Reference Include="System.Core" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NETFramework.ReferenceAssemblies" Version="1.0.3" PrivateAssets="all" />
+  </ItemGroup>
+</Project>

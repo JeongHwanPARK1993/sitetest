@@ -763,12 +763,22 @@ class SettingsDialog:
             v = tk.BooleanVar(value=lv in levels)
             self.lv_vars[lv] = v
             ttk.Checkbutton(row, text=name, variable=v).pack(side="left", padx=(0, 14))
+        self.chick_auto = tk.BooleanVar(value=st.get("chick_auto", False))
+        self.chick_alerts = tk.BooleanVar(value=st.get("chick_alerts", True))
         self.flash_var = tk.BooleanVar(value=st.get("widget_flash", True))
         ttk.Checkbutton(p, text="위젯이 켜져 있으면 위젯도 깜빡이기", variable=self.flash_var).grid(row=3, column=0, sticky="w", pady=(8, 0))
         ttk.Label(p, style="Sub.TLabel", justify="left", text=(
             "· 기한이 지난 일정은 일주일 동안 '기한 지남' 알림을 한 번 띄웁니다.\n"
             "· 같은 알림은 한 번만 뜹니다. 완료 처리한 일정은 알리지 않습니다.\n"
             "· 위젯만 켜 두어도(--widget) 알림이 뜹니다.")).grid(row=4, column=0, columnspan=3, sticky="w", pady=(12, 0))
+        cf = ttk.LabelFrame(p, text=" 🐥 병아리대원 ", padding=10)
+        cf.grid(row=5, column=0, columnspan=3, sticky="we", pady=(14, 0))
+        ttk.Checkbutton(cf, text="병아리대원이 나와 있으면, 기한 알림을 병아리대원이 '확인했어요?' 하고 물어보기",
+                        variable=self.chick_alerts).pack(anchor="w")
+        ttk.Checkbutton(cf, text="업무보조 달력을 켜면 병아리대원도 같이 출동시키기", variable=self.chick_auto).pack(anchor="w", pady=(4, 0))
+        ttk.Label(cf, style="Sub.TLabel", justify="left", text=(
+            "[처리했어요] = 달력에 처리완료 · [1시간 뒤에 다시] · [달력에서 볼게요] = 그 공문을 열어 줌\n"
+            "대답이 없으면 1시간 뒤에 한 번 더 물어봐요 (최대 2번).")).pack(anchor="w", pady=(6, 0))
 
         # ---- 자동화
         p = page(" ⚡ 자동화 ")
@@ -905,6 +915,7 @@ class SettingsDialog:
             "anchor_date": anchor.isoformat(), "pattern": pattern, "my_team": int(my[0]) if my[:1].isdigit() else 0,
             "alerts_on": self.alert_on.get(), "alert_levels": [lv for lv, v in self.lv_vars.items() if v.get()],
             "widget_flash": self.flash_var.get(),
+            "chick_auto": self.chick_auto.get(), "chick_alerts": self.chick_alerts.get(),
             "watch_downloads": self.dl_on.get(), "download_dir": dl,
             "widgets": {"desk": self.w_desk.get(), "list": self.w_list.get()},
             "team_theme": self.team_theme.get(),
@@ -2503,6 +2514,10 @@ class App:
 
         self.apply_settings(first=True)
         self.start_tray()
+        self.chick_asks = self.load_chick_inbox()       # 병아리대원에게 물어보고 아직 대답을 못 받은 것
+        self.chick_retry = []                           # [(다시 물을 시각, 일정 id, 단계, 횟수)]
+        if self.settings.get("chick_auto"):
+            self.root.after(1500, lambda: self.launch_chick(quiet=True))
         self.root.after(2500, self.check_alerts)        # 켜자마자 기한 알림 확인
         self.root.after(3000, self.background_tick)
         if widget_only:                                 # 위젯만 띄우기: 큰 달력 창은 숨겨 둔다
@@ -2588,6 +2603,7 @@ class App:
         wm.add_command(label="위젯 고르기 · 설정…", command=lambda: self.open_settings("widget"))
         wb["menu"] = wm
         wb.pack(side="right")
+        ttk.Button(inner, text="🐥 병아리대원 출동", command=self.launch_chick).pack(side="right", padx=6)
         tk.Frame(self.root, bg=BORDER, height=1).pack(fill="x")
 
     def build_statusbar(self):
@@ -3323,7 +3339,7 @@ class App:
         return [("toggle", "📅 업무보조 달력 " + ("숨기기" if shown else "열기"), False), None,
                 ("desk", "달력 위젯 (바탕화면 큰 달력)", self.deskcal is not None),
                 ("list", "목록 위젯 (오늘 근무 · 임박 기한)", self.widget is not None), None,
-                ("add", "＋ 공문 추가", False), ("settings", "⚙ 설정", False), None,
+                ("chick", "🐥 병아리대원 출동", False), ("add", "＋ 공문 추가", False), ("settings", "⚙ 설정", False), None,
                 ("quit", "✕ 종료", False)]
 
     def poll_tray(self):
@@ -3357,6 +3373,8 @@ class App:
         elif cmd == "settings":
             self.show_main()
             self.open_settings()
+        elif cmd == "chick":
+            self.launch_chick()
         elif cmd == "show":                             # 프로그램을 또 켰을 때: 이미 켜진 쪽을 보여 준다
             self.show_main()
         elif cmd == "widgets":                          # 윈도우 시작 때 또 켜진 경우: 위젯만
@@ -3419,6 +3437,7 @@ class App:
     def background_tick(self):
         self._tick += 1
         try:
+            self.chick_tick()
             if self.watcher is not None:                # 다운로드 폴더에 새 공문
                 new = self.watcher.check()
                 if new:
@@ -3460,7 +3479,114 @@ class App:
             if schedule:
                 self.root.after(10 * 60 * 1000, self.check_alerts)       # 10분마다
 
+    # ---- 병아리대원 (바탕화면 마스코트) --------------------------------------------
+    def chick_exe(self):
+        """같이 들어 있는 병아리대원 프로그램 위치"""
+        base = os.path.dirname(sys.executable) if getattr(sys, "frozen", False) else os.path.dirname(os.path.abspath(__file__))
+        for p in (os.path.join(base, "병아리대원", "병아리대원.exe"),
+                  os.path.join(base, "..", "병아리대원", "bin", "Release", "net40", "병아리대원.exe")):
+            if os.path.isfile(p):
+                return os.path.abspath(p)
+        return None
+
+    def launch_chick(self, quiet=False):
+        """🐥 병아리대원 출동: 병아리대원을 켠다 (이미 켜져 있으면 그대로). 켜져 있는 동안 기한 알림은 병아리가 물어본다."""
+        if gs.chick_running():
+            if not quiet:
+                Toast(self, "🐥 병아리대원 출동 중", "이미 바탕화면에 나와 있어요. 기한 알림은 병아리가 물어볼게요!", timeout=5000)
+            return True
+        exe = self.chick_exe()
+        if not exe:
+            if not quiet:
+                messagebox.showinfo("병아리대원", "병아리대원 프로그램을 찾지 못했어요.\n(업무보조달력 폴더 안의 '병아리대원' 폴더를 확인해 주세요)",
+                                    parent=self.root)
+            return False
+        try:
+            subprocess.Popen([exe], cwd=os.path.dirname(exe))
+        except OSError as e:
+            if not quiet:
+                messagebox.showerror("병아리대원", "병아리대원을 켜지 못했어요.\n%s" % e, parent=self.root)
+            return False
+        if not quiet:
+            Toast(self, "🐥 병아리대원 출동!", "이제 기한이 다가오면 병아리대원이\n'확인했어요?' 하고 물어봐요.", color="#d98200", timeout=6000)
+        return True
+
+    @staticmethod
+    def chick_message(ev, lv):
+        """병아리가 할 말"""
+        title = ev_label(ev).replace("↻ ", "")
+        kind = ev.get("kind", "")
+        tm = (" " + ev["time"]) if ev.get("time") else ""
+        if kind in ("행사", "메모"):
+            lead = {"D-3": "3일 뒤%s에" % tm, "D-1": "내일%s" % tm, "D-day": "오늘%s" % tm, "지남": "지난"}[lv]
+            q = "챙겼어요?" if lv != "지남" else "끝났어요?"
+            return "삐약! %s '%s' 일정이 있어요. %s" % (lead, title, q) if lv != "지남" else "삐약! %s '%s' 일정, %s" % (lead, title, q)
+        lead = {"D-3": "3일 남았어요!", "D-1": "내일까지예요!", "D-day": "오늘까지예요!", "지남": "기한이 지났어요!"}[lv]
+        return "삐약! '%s' %s 확인했어요?" % (title, lead)
+
+    def chick_ask(self, ev, lv, count=0):
+        key = "%s~%s~%d~%s" % (ev["id"], lv, count, dt.datetime.now().strftime("%H%M%S"))
+        self.chick_asks[key] = self.chick_message(ev, lv)
+        gs.chick_write_inbox(list(self.chick_asks.items()))
+
+    def load_chick_inbox(self):
+        """지난번에 물어보고 대답을 못 받은 것 (달력을 껐다 켜도 이어진다)"""
+        path = os.path.join(gs.chick_dir(), "inbox.txt")
+        asks = {}
+        try:
+            with open(path, "r", encoding="utf-8-sig") as f:
+                for line in f.read().splitlines():
+                    k, _, m = line.partition("\t")
+                    if k.strip() and m.strip():
+                        asks[k.strip()] = m.strip()
+        except OSError:
+            pass
+        return asks
+
+    def chick_tick(self):
+        """3초마다: 병아리대원이 받은 대답을 달력에 반영하고, 미룬 질문을 다시 보낸다"""
+        if not self.chick_asks and not self.chick_retry:
+            return
+        changed = False
+        for key, ans in gs.chick_read_outbox():
+            self.chick_asks.pop(key, None)
+            changed = True
+            parts = key.split("~")
+            ev = self.store.get(parts[0]) if parts else None
+            if ev is None:
+                continue
+            lv = parts[1] if len(parts) > 1 else "D-day"
+            count = int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else 0
+            if ans == "done":
+                if not ev.get("done"):
+                    self.set_done_toggle(ev)            # 처리 완료 (가운데 줄)
+            elif ans == "open":
+                self.show_event(ev)
+            elif ans == "snooze" or (ans == "ignore" and count < 2):
+                due = dt.datetime.now() + dt.timedelta(hours=1)          # 1시간 뒤에 다시 (대답이 없으면 두 번까지만)
+                self.chick_retry.append((due, ev["id"], lv, count + 1))
+        now = dt.datetime.now()
+        for item in [r for r in self.chick_retry if r[0] <= now]:
+            self.chick_retry.remove(item)
+            ev = self.store.get(item[1])
+            if ev is not None and not ev.get("done"):
+                key = "%s~%s~%d~%s" % (ev["id"], item[2], item[3], now.strftime("%H%M%S"))
+                self.chick_asks[key] = self.chick_message(ev, item[2])
+                changed = True
+        if changed:
+            try:
+                gs.chick_write_inbox(list(self.chick_asks.items()))
+            except OSError:
+                pass
+
     def show_alerts(self, items):
+        if self.settings.get("chick_alerts", True) and gs.chick_running():    # 병아리대원이 나와 있으면 병아리가 묻는다
+            try:
+                for ev, lv in items:
+                    self.chick_ask(ev, lv)
+                return
+            except OSError:
+                pass                                    # 못 쓰면 보통 알림창으로
         colors = {"D-3": "#b45309", "D-1": "#d9480f", "D-day": "#c0392b", "지남": "#7f1d1d"}
         names = {"D-3": "3일 남음", "D-1": "내일까지", "D-day": "오늘까지", "지남": "기한 지남"}
         if len(items) <= 3:
@@ -3507,6 +3633,9 @@ def selftest():
         second = gs.acquire_single_instance("Local\\GongmunSelfTestMutex", signal=False)
         out.append("single instance first=%s second=%s (정상: True/False)" % (first, second))
         out.append("virtual screen=%s" % (gs.virtual_screen(),))
+        out.append("chick exe=%s" % (app.chick_exe(),))
+        if sys.platform == "win32" and not app.chick_exe():
+            raise RuntimeError("병아리대원.exe 가 같이 들어 있지 않습니다")
         if app.tray_ok:
             app.handle_tray("desk"); app.root.update()          # 트레이 메뉴 명령도 눌러 본다
             app.handle_tray("desk"); app.root.update()

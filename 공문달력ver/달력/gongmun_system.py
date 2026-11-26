@@ -514,3 +514,70 @@ class TrayIcon:
         u.PostMessageW(self.hwnd, 0, 0, 0)
         u.DestroyMenu(menu)
         return ids.get(chosen)
+
+
+# ──────────────────────────────────────────────────────────────
+# 6. 병아리대원 (바탕화면 마스코트) 연결
+#    달력이 기한 알림을 inbox.txt 에 적으면 병아리대원이 말풍선으로 묻고,
+#    누른 대답(처리했어요/1시간 뒤에/달력에서 볼게요)을 outbox.txt 에 적는다.
+# ──────────────────────────────────────────────────────────────
+CHICK_MUTEX = "Local\\병아리대원_SingleInstance"
+
+
+def chick_dir():
+    """병아리대원 자료 폴더 (%APPDATA%\\병아리대원\\달력연결)"""
+    base = os.environ.get("APPDATA") or os.path.join(os.path.expanduser("~"), ".config")
+    return os.path.join(base, "병아리대원", "달력연결")
+
+
+def chick_running():
+    """병아리대원이 켜져 있는가 (병아리대원이 만드는 '한 번만 실행' 표식으로 확인)"""
+    if not IS_WIN:
+        return False
+    try:
+        import ctypes
+        from ctypes import wintypes
+        k = ctypes.windll.kernel32
+        k.OpenMutexW.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.LPCWSTR]
+        k.OpenMutexW.restype = wintypes.HANDLE
+        h = k.OpenMutexW(0x00100000, False, CHICK_MUTEX)      # SYNCHRONIZE
+        if h:
+            k.CloseHandle(h)
+            return True
+    except Exception:
+        pass
+    return False
+
+
+def chick_write_inbox(asks):
+    """asks = [(번호, 할 말), ...] 를 inbox.txt 에 통째로 쓴다 (임시 파일 → 바꿔치기)"""
+    d = chick_dir()
+    os.makedirs(d, exist_ok=True)
+    path = os.path.join(d, "inbox.txt")
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        for key, msg in asks:
+            f.write("%s\t%s\n" % (key, msg.replace("\t", " ").replace("\n", " ")))
+    os.replace(tmp, path)
+
+
+def chick_read_outbox():
+    """병아리대원이 적은 대답들 [(번호, 대답)]. 읽은 것은 지운다 (이름을 바꿔서 읽으니 사이에 적힌 대답도 안 잃는다)."""
+    d = chick_dir()
+    path = os.path.join(d, "outbox.txt")
+    if not os.path.exists(path):
+        return []
+    reading = os.path.join(d, "outbox.reading")
+    try:
+        os.replace(path, reading)
+        with open(reading, "r", encoding="utf-8-sig") as f:
+            lines = f.read().splitlines()
+        os.remove(reading)
+    except OSError:
+        return []
+    out = []
+    for line in lines:
+        key, _, ans = line.partition("\t")
+        if key.strip() and ans.strip():
+            out.append((key.strip(), ans.strip()))
+    return out
