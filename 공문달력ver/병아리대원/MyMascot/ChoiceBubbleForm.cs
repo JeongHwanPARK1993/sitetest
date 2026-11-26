@@ -76,6 +76,7 @@ public class ChoiceBubbleForm : Form
 		//IL_019c: Expected O, but got Unknown
 		//IL_01f4: Unknown result type (might be due to invalid IL or missing references)
 		//IL_01fb: Expected O, but got Unknown
+		((Form)this).StartPosition = FormStartPosition.Manual;   // 처음 띄울 때 윈도우가 위치를 바꾸지 않게 (로프 위치 어긋남 수정)
 		MouseEventHandler val = null;
 		MouseEventHandler val2 = null;
 		FormClosedEventHandler val3 = null;

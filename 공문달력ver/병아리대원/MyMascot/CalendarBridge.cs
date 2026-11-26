@@ -7,14 +7,14 @@ namespace MyMascot;
 
 /// <summary>
 /// 업무보조 달력과 병아리대원을 잇는 다리 (같은 PC 안의 파일로만 주고받는다. 인터넷 사용 없음)
-///   %APPDATA%\병아리대원\달력연결\inbox.txt   : 달력 → 병아리   한 줄에 "번호 [탭] 할 말"
-///   %APPDATA%\병아리대원\달력연결\outbox.txt  : 병아리 → 달력   한 줄에 "번호 [탭] 대답(done/snooze/open/ignore)"
+///   %APPDATA%\병아리대원\달력연결\inbox.txt   : 달력 → 병아리   한 줄에 "번호 [탭] 할 말 [탭] 진행중일 때 다시 물을 시간(선택)"
+///   %APPDATA%\병아리대원\달력연결\outbox.txt  : 병아리 → 달력   한 줄에 "번호 [탭] 대답(done/progress/mute/ignore)"
 /// </summary>
 public static class CalendarBridge
 {
-	private static readonly string[] Options = new string[3] { "처리했어요!", "1시간 뒤에 다시", "달력에서 볼게요" };
+	private static readonly string[] Options = new string[3] { "완료", "진행중", "알람끄기" };
 
-	private static readonly string[] Answers = new string[3] { "done", "snooze", "open" };
+	private static readonly string[] Answers = new string[3] { "done", "progress", "mute" };
 
 	private static readonly string[] ThanksLines = new string[4] { "잘했어요! 달력에 처리 완료로 적어 둘게요.", "역시 최고예요! 처리 완료!", "삐약! 하나 끝냈어요. 수고했어요!", "완료 표시 했어요. 다음 일도 같이 챙겨요!" };
 
@@ -56,18 +56,20 @@ public static class CalendarBridge
 				continue;
 			}
 			string key = line.Substring(0, tab).Trim();
-			string message = line.Substring(tab + 1).Trim();
+			string[] rest = line.Substring(tab + 1).Split('\t');
+			string message = rest[0].Trim();
+			string later = (rest.Length > 1) ? rest[1].Trim() : "";
 			if (key.Length == 0 || message.Length == 0 || handled.Contains(key))
 			{
 				continue;
 			}
 			handled.Add(key);
-			Ask(mascot, key, message);
+			Ask(mascot, key, message, later);
 			break;
 		}
 	}
 
-	private static void Ask(MascotForm mascot, string key, string message)
+	private static void Ask(MascotForm mascot, string key, string message, string later)
 	{
 		asking = true;
 		mascot.AskCalendar(message, Options, delegate(int pick)
@@ -80,7 +82,11 @@ public static class CalendarBridge
 			}
 			else if (pick == 1)
 			{
-				mascot.SayCalendar("알겠어요! 1시간 뒤에 다시 물어볼게요.");
+				mascot.SayCalendar(later.Length > 0 ? ("화이팅! " + later + " 뒤에 다시 물어볼게요.") : "화이팅! 나중에 다시 물어볼게요.");
+			}
+			else
+			{
+				mascot.SayCalendar("알겠어요. 이 일은 더 안 물어볼게요.");
 			}
 		}, delegate
 		{

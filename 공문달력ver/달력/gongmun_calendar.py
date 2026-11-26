@@ -776,9 +776,41 @@ class SettingsDialog:
         ttk.Checkbutton(cf, text="병아리대원이 나와 있으면, 기한 알림을 병아리대원이 '확인했어요?' 하고 물어보기",
                         variable=self.chick_alerts).pack(anchor="w")
         ttk.Checkbutton(cf, text="업무보조 달력을 켜면 병아리대원도 같이 출동시키기", variable=self.chick_auto).pack(anchor="w", pady=(4, 0))
+        self.chick_checkin = tk.BooleanVar(value=st.get("chick_checkin", True))
+        ttk.Checkbutton(cf, text="병아리대원이 주기적으로 '이 일 했어요?' 하고 물어보기", variable=self.chick_checkin).pack(anchor="w", pady=(8, 0))
+        r1 = ttk.Frame(cf)
+        r1.pack(anchor="w", padx=22, pady=(2, 0))
+        ttk.Label(r1, text="물어보는 간격").pack(side="left")
+        self.chick_every = tk.StringVar(value="%d시간" % int(st.get("chick_checkin_every", 2)))
+        ttk.Combobox(r1, textvariable=self.chick_every, values=["%d시간" % h for h in App.CHICK_EVERY], width=6,
+                     state="readonly").pack(side="left", padx=(4, 14))
+        ttk.Label(r1, text="확인할 범위").pack(side="left")
+        rng = dict(App.CHICK_RANGE)
+        self.chick_range = tk.StringVar(value=rng.get(int(st.get("chick_range", 1)), "내일까지"))
+        ttk.Combobox(r1, textvariable=self.chick_range, values=[t for _, t in App.CHICK_RANGE], width=11,
+                     state="readonly").pack(side="left", padx=4)
+        r2 = ttk.Frame(cf)
+        r2.pack(anchor="w", padx=22, pady=(4, 0))
+        ttk.Label(r2, text="[진행중] 을 누르면").pack(side="left")
+        self.chick_later = tk.StringVar(value="%d시간" % int(st.get("chick_progress_hours", 4)))
+        ttk.Combobox(r2, textvariable=self.chick_later, values=["%d시간" % h for h in App.CHICK_LATER], width=6,
+                     state="readonly").pack(side="left", padx=4)
+        ttk.Label(r2, text="뒤에 다시 물어보기").pack(side="left")
+        self.chick_workhours = tk.BooleanVar(value=st.get("chick_workhours", True))
+        ttk.Checkbutton(cf, text="09시 ~ 18시 사이에만 물어보기", variable=self.chick_workhours).pack(anchor="w", padx=22, pady=(4, 0))
+        r3 = ttk.Frame(cf)
+        r3.pack(anchor="w", padx=22, pady=(4, 0))
+        self.chick_muted_n = ttk.Label(r3, text="알람 끈 일: %d개" % len(st.get("chick_muted", [])), style="Sub.TLabel")
+        self.chick_muted_n.pack(side="left")
+        self.clear_muted = False
+
+        def unmute_all():
+            self.clear_muted = True
+            self.chick_muted_n.config(text="알람 끈 일: 0개 (저장하면 다시 물어봐요)")
+        ttk.Button(r3, text="모두 다시 켜기", command=unmute_all).pack(side="left", padx=8)
         ttk.Label(cf, style="Sub.TLabel", justify="left", text=(
-            "[처리했어요] = 달력에 처리완료 · [1시간 뒤에 다시] · [달력에서 볼게요] = 그 공문을 열어 줌\n"
-            "대답이 없으면 1시간 뒤에 한 번 더 물어봐요 (최대 2번).")).pack(anchor="w", pady=(6, 0))
+            "말풍선 버튼:  [완료] = 달력에 처리 완료(가운데 줄)  ·  [진행중] = 위에서 정한 시간 뒤 다시\n"
+            "               [알람끄기] = 그 일은 더 이상 안 물어봄 (일정 우클릭 메뉴에서 다시 켤 수 있어요)")).pack(anchor="w", pady=(8, 0))
 
         # ---- 자동화
         p = page(" ⚡ 자동화 ")
@@ -916,6 +948,10 @@ class SettingsDialog:
             "alerts_on": self.alert_on.get(), "alert_levels": [lv for lv, v in self.lv_vars.items() if v.get()],
             "widget_flash": self.flash_var.get(),
             "chick_auto": self.chick_auto.get(), "chick_alerts": self.chick_alerts.get(),
+            "chick_checkin": self.chick_checkin.get(), "chick_workhours": self.chick_workhours.get(),
+            "chick_checkin_every": int(self.chick_every.get().rstrip("시간")),
+            "chick_progress_hours": int(self.chick_later.get().rstrip("시간")),
+            "chick_range": {t: d for d, t in App.CHICK_RANGE}[self.chick_range.get()],
             "watch_downloads": self.dl_on.get(), "download_dir": dl,
             "widgets": {"desk": self.w_desk.get(), "list": self.w_list.get()},
             "team_theme": self.team_theme.get(),
@@ -923,6 +959,8 @@ class SettingsDialog:
         })
         st.pop("clip_watch", None)
         st.pop("team_tint", None)
+        if self.clear_muted:
+            st["chick_muted"] = []
         dc = st.setdefault("desk_cal", {})
         old_dc = dict(dc)
         dc.update({"mode": self.dc_mode.get(), "theme": "light" if self.dc_theme.get() == "밝게" else "dark",
@@ -2516,6 +2554,9 @@ class App:
         self.start_tray()
         self.chick_asks = self.load_chick_inbox()       # 병아리대원에게 물어보고 아직 대답을 못 받은 것
         self.chick_retry = []                           # [(다시 물을 시각, 일정 id, 단계, 횟수)]
+        self.chick_snooze = {}                          # [진행중] 누른 일: id -> 다시 물을 시각
+        every = dt.timedelta(hours=int(self.settings.get("chick_checkin_every", 2)))
+        self._last_checkin = dt.datetime.now() - every + dt.timedelta(minutes=3)   # 켜고 3분 뒤 첫 확인
         if self.settings.get("chick_auto"):
             self.root.after(1500, lambda: self.launch_chick(quiet=True))
         self.root.after(2500, self.check_alerts)        # 켜자마자 기한 알림 확인
@@ -2880,6 +2921,8 @@ class App:
                 t.insert("end", "★ 내 실적" + ((" · " + ev["note"]) if ev.get("note") else "") + "\n", "meta")
             if ev.get("repeat"):
                 t.insert("end", "🔁 " + core.describe_repeat(ev["repeat"]) + "\n", "meta")
+            if ev["id"] in self.settings.get("chick_muted", []):
+                t.insert("end", "🔕 병아리 알람 꺼짐 (우클릭 메뉴에서 다시 켜기)\n", "meta")
             if ev.get("links"):
                 t.insert("end", "🔗 관련 공문: " + " / ".join(lk.get("title", "") for lk in ev["links"]) + "\n", "meta")
             if ev.get("memo"):
@@ -3127,6 +3170,9 @@ class App:
         m.add_command(label="↩ 완료 취소" if ev.get("done") else "✔ 완료했음 (가운데 줄)", command=lambda: self.set_done_toggle(ev))
         m.add_command(label="☆ 내 실적에서 빼기" if ev.get("mine") else "★ 내 실적에 넣기 (자기역량기술서)", command=lambda: self.set_mine_toggle(ev))
         m.add_command(label="📝 실적 메모 쓰기…", command=lambda: NoteDialog(self, ev))
+        muted = ev["id"] in self.settings.get("chick_muted", [])
+        m.add_command(label="🔔 병아리 알람 다시 켜기" if muted else "🔕 병아리 알람 끄기 (이 일은 안 물어봄)",
+                      command=lambda: self.toggle_chick_mute(ev))
         m.add_separator()
         m.add_command(label="🗑 삭제", command=lambda: self.delete_given(ev))
         try:
@@ -3142,6 +3188,19 @@ class App:
             self.day_list.selection_set(i)
             self.show_detail()
             self.popup_menu(e.x_root, e.y_root, self.day_events[i])
+
+    def toggle_chick_mute(self, ev):
+        muted = self.settings.setdefault("chick_muted", [])
+        if ev["id"] in muted:
+            muted.remove(ev["id"])
+        else:
+            muted.append(ev["id"])
+            for k in [k for k in self.chick_asks if k.split("~")[0] == ev["id"]]:
+                del self.chick_asks[k]
+            self.chick_save_inbox()
+        core.save_settings(self.settings)
+        self.pending_select_id = ev["id"]
+        self.refresh()
 
     def set_done_toggle(self, ev):
         self.pending_select_id = ev["id"]
@@ -3507,27 +3566,57 @@ class App:
             if not quiet:
                 messagebox.showerror("병아리대원", "병아리대원을 켜지 못했어요.\n%s" % e, parent=self.root)
             return False
+        every = dt.timedelta(hours=int(self.settings.get("chick_checkin_every", 2)))
+        self._last_checkin = min(self._last_checkin, dt.datetime.now() - every + dt.timedelta(minutes=2))
         if not quiet:
-            Toast(self, "🐥 병아리대원 출동!", "이제 기한이 다가오면 병아리대원이\n'확인했어요?' 하고 물어봐요.", color="#d98200", timeout=6000)
+            Toast(self, "🐥 병아리대원 출동!", "오늘 할 일과 다가오는 기한을\n병아리대원이 '했어요?' 하고 물어봐요.", color="#d98200", timeout=6000)
         return True
+
+    # 설정 값 (설정 창에서 고른다)
+    CHICK_EVERY = [1, 2, 3, 4]                              # 몇 시간마다 '했어요?' 물을지
+    CHICK_RANGE = [(0, "오늘까지"), (1, "내일까지"), (3, "3일 뒤까지"), (7, "일주일 뒤까지"), (30, "한 달 뒤까지")]
+    CHICK_LATER = [1, 2, 3, 4, 6, 8]                        # [진행중] 누르면 몇 시간 뒤에 다시
+
+    def chick_later_text(self):
+        return "%d시간" % int(self.settings.get("chick_progress_hours", 4))
 
     @staticmethod
     def chick_message(ev, lv):
-        """병아리가 할 말"""
+        """병아리가 할 말. lv = D-3 / D-1 / D-day / 지남 (기한 알림) 또는 CHK (주기적으로 '했어요?')"""
         title = ev_label(ev).replace("↻ ", "")
         kind = ev.get("kind", "")
         tm = (" " + ev["time"]) if ev.get("time") else ""
+        d = dt.date.fromisoformat(ev["date"])
+        n = (d - dt.date.today()).days
+        if lv == "CHK":                                 # 주기적 확인
+            if n < 0:
+                return "삐약! '%s' 기한이 %d일 지났어요. 했어요?" % (title, -n)
+            when = "오늘%s" % tm if n == 0 else ("내일%s" % tm if n == 1 else "%d/%d(%s)%s" % (d.month, d.day, "월화수목금토일"[d.weekday()], tm))
+            if kind in ("행사", "메모"):
+                return "삐약! %s '%s' 챙겼어요?" % (when, title)
+            return "삐약! %s까지인 '%s' 했어요?" % (when, title)
         if kind in ("행사", "메모"):
-            lead = {"D-3": "3일 뒤%s에" % tm, "D-1": "내일%s" % tm, "D-day": "오늘%s" % tm, "지남": "지난"}[lv]
-            q = "챙겼어요?" if lv != "지남" else "끝났어요?"
-            return "삐약! %s '%s' 일정이 있어요. %s" % (lead, title, q) if lv != "지남" else "삐약! %s '%s' 일정, %s" % (lead, title, q)
+            lead = {"D-3": "3일 뒤%s" % tm, "D-1": "내일%s" % tm, "D-day": "오늘%s" % tm, "지남": "지난"}[lv]
+            if lv == "지남":
+                return "삐약! %s '%s' 일정, 끝났어요?" % (lead, title)
+            return "삐약! %s '%s' 일정이 있어요. 챙겼어요?" % (lead, title)
         lead = {"D-3": "3일 남았어요!", "D-1": "내일까지예요!", "D-day": "오늘까지예요!", "지남": "기한이 지났어요!"}[lv]
-        return "삐약! '%s' %s 확인했어요?" % (title, lead)
+        return "삐약! '%s' %s 했어요?" % (title, lead)
+
+    def chick_save_inbox(self):
+        try:
+            gs.chick_write_inbox(list(self.chick_asks.items()), self.chick_later_text())
+        except OSError:
+            pass
 
     def chick_ask(self, ev, lv, count=0):
+        if ev["id"] in self.settings.get("chick_muted", []):
+            return                                      # [알람끄기] 한 일은 다시 안 묻는다
+        if any(k.split("~")[0] == ev["id"] for k in self.chick_asks):
+            return                                      # 이미 물어보는 중
         key = "%s~%s~%d~%s" % (ev["id"], lv, count, dt.datetime.now().strftime("%H%M%S"))
         self.chick_asks[key] = self.chick_message(ev, lv)
-        gs.chick_write_inbox(list(self.chick_asks.items()))
+        self.chick_save_inbox()
 
     def load_chick_inbox(self):
         """지난번에 물어보고 대답을 못 받은 것 (달력을 껐다 켜도 이어진다)"""
@@ -3536,48 +3625,103 @@ class App:
         try:
             with open(path, "r", encoding="utf-8-sig") as f:
                 for line in f.read().splitlines():
-                    k, _, m = line.partition("\t")
-                    if k.strip() and m.strip():
-                        asks[k.strip()] = m.strip()
+                    parts = line.split("\t")
+                    if len(parts) >= 2 and parts[0].strip() and parts[1].strip():
+                        asks[parts[0].strip()] = parts[1].strip()
         except OSError:
             pass
         return asks
 
-    def chick_tick(self):
-        """3초마다: 병아리대원이 받은 대답을 달력에 반영하고, 미룬 질문을 다시 보낸다"""
-        if not self.chick_asks and not self.chick_retry:
-            return
-        changed = False
-        for key, ans in gs.chick_read_outbox():
-            self.chick_asks.pop(key, None)
-            changed = True
-            parts = key.split("~")
-            ev = self.store.get(parts[0]) if parts else None
-            if ev is None:
-                continue
-            lv = parts[1] if len(parts) > 1 else "D-day"
-            count = int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else 0
-            if ans == "done":
-                if not ev.get("done"):
-                    self.set_done_toggle(ev)            # 처리 완료 (가운데 줄)
-            elif ans == "open":
-                self.show_event(ev)
-            elif ans == "snooze" or (ans == "ignore" and count < 2):
-                due = dt.datetime.now() + dt.timedelta(hours=1)          # 1시간 뒤에 다시 (대답이 없으면 두 번까지만)
-                self.chick_retry.append((due, ev["id"], lv, count + 1))
+    def chick_targets(self):
+        """지금 '했어요?' 하고 물어볼 일들: 처리 안 했고, 기한이 오늘~설정한 날 안(지난 것 포함), 알람끄기 안 한 것"""
+        today = dt.date.today()
+        hi = today + dt.timedelta(days=int(self.settings.get("chick_range", 1)))
+        lo = today - dt.timedelta(days=30)
+        muted = set(self.settings.get("chick_muted", []))
         now = dt.datetime.now()
-        for item in [r for r in self.chick_retry if r[0] <= now]:
-            self.chick_retry.remove(item)
-            ev = self.store.get(item[1])
-            if ev is not None and not ev.get("done"):
-                key = "%s~%s~%d~%s" % (ev["id"], item[2], item[3], now.strftime("%H%M%S"))
-                self.chick_asks[key] = self.chick_message(ev, item[2])
-                changed = True
-        if changed:
+        pending = {k.split("~")[0] for k in self.chick_asks}
+        out = []
+        for e in self.store.expanded(lo, hi):
             try:
-                gs.chick_write_inbox(list(self.chick_asks.items()))
-            except OSError:
-                pass
+                d = dt.date.fromisoformat(e["date"])
+            except (KeyError, ValueError):
+                continue
+            if not (lo <= d <= hi) or e.get("done") or e.get("kind") == "변경전":
+                continue
+            if e["id"] in muted or e["id"] in pending or self.chick_snooze.get(e["id"], now) > now:
+                continue
+            out.append(e)
+        out.sort(key=lambda e: (e["date"], e.get("time") or ""))
+        return out[:5]                                  # 한 번에 너무 많이 묻지 않게 5개까지
+
+    def chick_checkin_due(self):
+        s = self.settings
+        if not s.get("chick_checkin", True):
+            return False
+        now = dt.datetime.now()
+        if s.get("chick_workhours", True) and not (9 <= now.hour < 18):
+            return False
+        every = dt.timedelta(hours=int(s.get("chick_checkin_every", 2)))
+        return now - self._last_checkin >= every
+
+    def chick_tick(self):
+        """3초마다: 병아리대원의 대답을 달력에 반영하고, 미룬 질문·주기적 '했어요?' 를 보낸다"""
+        changed = False
+        now = dt.datetime.now()
+        if self.chick_asks or self.chick_retry or os.path.exists(os.path.join(gs.chick_dir(), "outbox.txt")):
+            for key, ans in gs.chick_read_outbox():
+                self.chick_asks.pop(key, None)
+                changed = True
+                parts = key.split("~")
+                ev = self.store.get(parts[0]) if parts else None
+                if ev is None:
+                    continue
+                lv = parts[1] if len(parts) > 1 else "D-day"
+                count = int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else 0
+                if ans == "done":                       # [완료] 달력에 처리 완료 (가운데 줄)
+                    if not ev.get("done"):
+                        self.set_done_toggle(ev)
+                elif ans in ("progress", "snooze"):     # [진행중] 설정한 시간 뒤에 다시
+                    hours = int(self.settings.get("chick_progress_hours", 4)) if ans == "progress" else 1
+                    due = now + dt.timedelta(hours=hours)
+                    self.chick_snooze[ev["id"]] = due
+                    self.chick_retry.append((due, ev["id"], lv, count + 1))
+                elif ans == "mute":                     # [알람끄기] 이 일은 더 안 묻는다
+                    muted = self.settings.setdefault("chick_muted", [])
+                    if ev["id"] not in muted:
+                        muted.append(ev["id"])
+                        core.save_settings(self.settings)
+                    for k in [k for k in self.chick_asks if k.split("~")[0] == ev["id"]]:
+                        del self.chick_asks[k]
+                    self.chick_retry = [r for r in self.chick_retry if r[1] != ev["id"]]
+                    self.pending_select_id = ev["id"]
+                    self.refresh()
+                elif ans == "open":
+                    self.show_event(ev)
+                elif ans == "ignore" and lv != "CHK" and count < 2:   # 기한 알림에 대답이 없으면 1시간 뒤 다시 (두 번까지)
+                    self.chick_retry.append((now + dt.timedelta(hours=1), ev["id"], lv, count + 1))
+            for item in [r for r in self.chick_retry if r[0] <= now]:
+                self.chick_retry.remove(item)
+                self.chick_snooze.pop(item[1], None)
+                ev = self.store.get(item[1])
+                if ev is not None and not ev.get("done") and ev["id"] not in self.settings.get("chick_muted", []):
+                    key = "%s~%s~%d~%s" % (ev["id"], item[2], item[3], now.strftime("%H%M%S"))
+                    self.chick_asks[key] = self.chick_message(ev, item[2] if item[2] != "CHK" else "CHK")
+                    changed = True
+            for k in list(self.chick_asks):             # 그사이 달력에서 완료·삭제한 일은 묻지 않는다
+                ev = self.store.get(k.split("~")[0])
+                if ev is None or ev.get("done"):
+                    del self.chick_asks[k]
+                    changed = True
+        if self.chick_checkin_due():                    # 주기적으로 '했어요?'
+            self._last_checkin = now
+            if gs.chick_running():
+                for ev in self.chick_targets():
+                    key = "%s~CHK~0~%s" % (ev["id"], now.strftime("%H%M%S"))
+                    self.chick_asks[key] = self.chick_message(ev, "CHK")
+                    changed = True
+        if changed:
+            self.chick_save_inbox()
 
     def show_alerts(self, items):
         if self.settings.get("chick_alerts", True) and gs.chick_running():    # 병아리대원이 나와 있으면 병아리가 묻는다

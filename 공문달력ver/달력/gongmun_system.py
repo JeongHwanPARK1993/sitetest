@@ -549,15 +549,16 @@ def chick_running():
     return False
 
 
-def chick_write_inbox(asks):
-    """asks = [(번호, 할 말), ...] 를 inbox.txt 에 통째로 쓴다 (임시 파일 → 바꿔치기)"""
+def chick_write_inbox(asks, later=""):
+    """asks = [(번호, 할 말), ...] 를 inbox.txt 에 통째로 쓴다 (임시 파일 → 바꿔치기)
+    later = [진행중] 을 누르면 다시 물을 시간 (병아리가 '4시간 뒤에 다시 물어볼게요' 라고 말할 때 씀)"""
     d = chick_dir()
     os.makedirs(d, exist_ok=True)
     path = os.path.join(d, "inbox.txt")
     tmp = path + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
         for key, msg in asks:
-            f.write("%s\t%s\n" % (key, msg.replace("\t", " ").replace("\n", " ")))
+            f.write("%s\t%s\t%s\n" % (key, msg.replace("\t", " ").replace("\n", " "), later))
     os.replace(tmp, path)
 
 

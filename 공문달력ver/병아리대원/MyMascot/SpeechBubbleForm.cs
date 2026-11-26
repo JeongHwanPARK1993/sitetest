@@ -64,6 +64,7 @@ public class SpeechBubbleForm : Form
 
 	public SpeechBubbleForm()
 	{
+		((Form)this).StartPosition = FormStartPosition.Manual;   // 처음 띄울 때 윈도우가 위치를 바꾸지 않게 (로프 위치 어긋남 수정)
 		((Form)this).FormBorderStyle = (FormBorderStyle)0;
 		((Form)this).ShowInTaskbar = false;
 		((Form)this).TopMost = true;
