@@ -36,6 +36,78 @@ public static class CalendarBridge
 
 	private static string UpcomingFile => Path.Combine(Dir, "upcoming.txt");
 
+	private static string SayFile => Path.Combine(Dir, "say.txt");
+
+	private static string MemoFile => Path.Combine(Dir, "memo_out.txt");
+
+	private static readonly Queue<string[]> sayQueue = new Queue<string[]>();
+
+	/// <summary>업무보조 달력이 켜져 있는가 (달력의 '한 번만 실행' 표식)</summary>
+	public static bool CalendarRunning
+	{
+		get
+		{
+			try
+			{
+				using (System.Threading.Mutex m = System.Threading.Mutex.OpenExisting("Local\\GongmunCalendarSingleInstance"))
+				{
+					return true;
+				}
+			}
+			catch
+			{
+				return false;
+			}
+		}
+	}
+
+	/// <summary>병아리에게 말한 메모를 달력에 보낸다. kind: memo(달력에 적기) / today(오늘 할 일 알려줘)</summary>
+	public static void SendMemo(string kind, string text)
+	{
+		try
+		{
+			Directory.CreateDirectory(Dir);
+			File.AppendAllText(MemoFile, kind + "\t" + text.Replace("\t", " ").Replace("\r", " ").Replace("\n", " ") + Environment.NewLine, Utf8);
+		}
+		catch
+		{
+		}
+	}
+
+	/// <summary>달력이 시킨 말·반응 (say.txt: 종류 [탭] 말) 을 읽어 줄에 세운다. 이름을 바꿔 읽으니 사이에 적힌 것도 안 잃는다.</summary>
+	private static void ReadSays()
+	{
+		if (!File.Exists(SayFile))
+		{
+			return;
+		}
+		string reading = SayFile + ".reading";
+		try
+		{
+			if (File.Exists(reading))
+			{
+				File.Delete(reading);
+			}
+			File.Move(SayFile, reading);
+			foreach (string line in File.ReadAllLines(reading, Encoding.UTF8))
+			{
+				int tab = line.IndexOf('\t');
+				if (tab > 0 && line.Length > tab + 1)
+				{
+					sayQueue.Enqueue(new string[2] { line.Substring(0, tab).Trim(), line.Substring(tab + 1).Trim() });
+				}
+			}
+			File.Delete(reading);
+		}
+		catch
+		{
+		}
+		while (sayQueue.Count > 6)
+		{
+			sayQueue.Dequeue();                         // 오래 꺼져 있다 켜져서 많이 쌓였으면 최근 것만
+		}
+	}
+
 	/// <summary>달력이 연결된 적이 있는가 (달력이 설정 파일을 만들어 둔다)</summary>
 	public static bool Linked => File.Exists(SettingsFile);
 
@@ -113,6 +185,13 @@ public static class CalendarBridge
 	/// <summary>5초마다 불린다: 아직 묻지 않은 달력 질문이 있으면 하나 꺼내서 묻는다.</summary>
 	public static void Poll(MascotForm mascot)
 	{
+		ReadSays();
+		if (!asking && sayQueue.Count > 0 && !mascot.SpeechBusy)
+		{
+			string[] say = sayQueue.Dequeue();
+			mascot.CalendarReact(say[0], say[1]);
+			return;                                     // 말하는 동안은 질문을 미룬다
+		}
 		if (asking || !File.Exists(Inbox))
 		{
 			return;

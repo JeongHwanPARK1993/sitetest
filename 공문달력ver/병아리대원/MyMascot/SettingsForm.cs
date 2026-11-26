@@ -897,6 +897,18 @@ public class SettingsForm : Form
 
 	private Label calMuted;
 
+	private CheckBox calBrief;
+
+	private ComboBox calBriefTime;
+
+	private ComboBox calWorkType;
+
+	private CheckBox calReact;
+
+	private static readonly string[] BriefTimes = new string[12] { "06:00", "06:30", "07:00", "07:30", "08:00", "08:30", "09:00", "09:30", "10:00", "10:30", "11:00", "11:30" };
+
+	private static readonly string[] WorkTypeNames = new string[2] { "일근 (평일 출근)", "3교대 (내 팀 근무일)" };
+
 	private bool calUnmute;
 
 	private static string Get(Dictionary<string, string> d, string key, string def)
@@ -946,20 +958,35 @@ public class SettingsForm : Form
 		MakeLabel(page, "뒤에 다시 물어보기", 208, 66, 140);
 		calWork = new CheckBox();
 		calWork.Text = "09시 ~ 18시 사이에만 물어보기";
-		calWork.Location = new Point(30, 94);
+		calWork.Location = new Point(30, 90);
 		calWork.Width = 300;
 		calWork.Checked = Get(st, "workhours", "1") == "1";
 		page.Controls.Add(calWork);
 		calAlerts = new CheckBox();
 		calAlerts.Text = "기한 알림(3일 전 · 하루 전 · 당일 · 지남)도 병아리가 전하기";
-		calAlerts.Location = new Point(12, 118);
+		calAlerts.Location = new Point(12, 112);
 		calAlerts.Width = 490;
 		calAlerts.Checked = Get(st, "alerts", "1") == "1";
 		page.Controls.Add(calAlerts);
-		MakeLabel(page, "지금 달력에서 챙길 일", 12, 146, 300).Font = new Font("맑은 고딕", 9f, FontStyle.Bold);
+		calBrief = new CheckBox();
+		calBrief.Text = "아침 브리핑 (근무하는 날)";
+		calBrief.Location = new Point(12, 136);
+		calBrief.Width = 175;
+		calBrief.Checked = Get(st, "brief", "1") == "1";
+		page.Controls.Add(calBrief);
+		calBriefTime = MakeCombo(page, 190, 136, 66, BriefTimes, Math.Max(0, Array.IndexOf(BriefTimes, Get(st, "brief_time", "09:00"))));
+		MakeLabel(page, "근무 형태", 268, 139, 60);
+		calWorkType = MakeCombo(page, 330, 136, 180, WorkTypeNames, (Get(st, "work_type", "day") == "shift") ? 1 : 0);
+		calReact = new CheckBox();
+		calReact.Text = "병아리 반응 (많이 처리하면 축하 춤 · 기한 지난 일이 쌓이면 걱정)";
+		calReact.Location = new Point(12, 160);
+		calReact.Width = 490;
+		calReact.Checked = Get(st, "react", "1") == "1";
+		page.Controls.Add(calReact);
+		MakeLabel(page, "지금 달력에서 챙길 일", 12, 188, 300).Font = new Font("맑은 고딕", 9f, FontStyle.Bold);
 		ListBox list = new ListBox();
-		list.Location = new Point(12, 168);
-		list.Size = new Size(500, 82);
+		list.Location = new Point(12, 208);
+		list.Size = new Size(500, 56);
 		list.HorizontalScrollbar = true;
 		foreach (string[] it in CalendarBridge.ReadUpcoming())
 		{
@@ -970,10 +997,10 @@ public class SettingsForm : Form
 			list.Items.Add(CalendarBridge.Linked ? "  챙길 일이 없어요. 잘하고 있어요!" : "  업무보조 달력과 아직 연결되지 않았어요. 달력에서 [병아리대원 출동]을 눌러 주세요.");
 		}
 		page.Controls.Add(list);
-		calMuted = MakeLabel(page, "알람 끈 일: " + Get(st, "muted", "0") + "개", 12, 258, 150);
+		calMuted = MakeLabel(page, "알람 끈 일: " + Get(st, "muted", "0") + "개", 12, 272, 150);
 		Button unmute = new Button();
 		unmute.Text = "모두 다시 켜기";
-		unmute.Location = new Point(165, 256);
+		unmute.Location = new Point(165, 268);
 		unmute.Width = 110;
 		unmute.Click += delegate
 		{
@@ -981,7 +1008,7 @@ public class SettingsForm : Form
 			calMuted.Text = "알람 끈 일: 0개 (저장하면 다시 물어봐요)";
 		};
 		page.Controls.Add(unmute);
-		MakeLabel(page, "[완료] 달력에 처리 완료 · [진행중] 정한 시간 뒤 다시 · [알람끄기] 그 일은 안 물어봄", 12, 284, 510).ForeColor = Color.FromArgb(110, 110, 110);
+		MakeLabel(page, "병아리를 한 번 누르면 말로 메모를 달력에 적어요", 284, 272, 230).ForeColor = Color.FromArgb(110, 110, 110);
 	}
 
 	private void SaveCalendarTab()
@@ -997,6 +1024,10 @@ public class SettingsForm : Form
 		st["progress"] = CalLaterHours[Math.Max(0, calLater.SelectedIndex)].ToString();
 		st["workhours"] = calWork.Checked ? "1" : "0";
 		st["alerts"] = calAlerts.Checked ? "1" : "0";
+		st["brief"] = calBrief.Checked ? "1" : "0";
+		st["brief_time"] = BriefTimes[Math.Max(0, calBriefTime.SelectedIndex)];
+		st["work_type"] = (calWorkType.SelectedIndex == 1) ? "shift" : "day";
+		st["react"] = calReact.Checked ? "1" : "0";
 		if (calUnmute)
 		{
 			st["unmute_all"] = "1";

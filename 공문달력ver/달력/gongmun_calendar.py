@@ -749,6 +749,15 @@ class SettingsDialog:
                          highlightthickness=1, highlightbackground=BORDER).pack(side="left", padx=2)
         ttk.Label(p, text="칸을 칠하지 않고 '1팀 · 2팀 · 3팀' 글자 색만 바뀝니다. 내 팀은 굵게 보입니다.", style="Sub.TLabel").grid(
             row=9, column=0, columnspan=2, sticky="w", padx=14, pady=(6, 0))
+        ttk.Label(p, text="🕘 내 근무 형태 (아침 브리핑 · 병아리 '했어요?' 를 근무하는 날에만)", font=(FONT, 10, "bold")).grid(
+            row=10, column=0, columnspan=2, sticky="w", pady=(14, 4))
+        self.work_type = tk.StringVar(value=core.work_type(st))
+        wt = ttk.Frame(p)
+        wt.grid(row=11, column=0, columnspan=2, sticky="w", padx=14)
+        ttk.Radiobutton(wt, text="일근 (평일 매일 출근 · 주말·공휴일 쉼)", value="day", variable=self.work_type).pack(anchor="w")
+        ttk.Radiobutton(wt, text="3교대 (위에서 정한 '내 팀' 이 근무하는 날)", value="shift", variable=self.work_type).pack(anchor="w")
+        ttk.Label(p, text="내 팀을 '없음' 으로 두면 일근으로 봅니다.", style="Sub.TLabel").grid(
+            row=12, column=0, columnspan=2, sticky="w", padx=14, pady=(2, 0))
 
         # ---- 알림
         p = page(" ⏰ 기한 알림 ")
@@ -808,7 +817,17 @@ class SettingsDialog:
             self.clear_muted = True
             self.chick_muted_n.config(text="알람 끈 일: 0개 (저장하면 다시 물어봐요)")
         ttk.Button(r3, text="모두 다시 켜기", command=unmute_all).pack(side="left", padx=8)
+        r4 = ttk.Frame(cf)
+        r4.pack(anchor="w", pady=(8, 0))
+        self.brief_on = tk.BooleanVar(value=st.get("brief_on", True))
+        ttk.Checkbutton(r4, text="☀ 아침 브리핑 (근무하는 날, 출근하면 오늘 · 이번 주 · 지난 미처리 건수 알려 주기)  시각",
+                        variable=self.brief_on).pack(side="left")
+        self.brief_time = tk.StringVar(value=st.get("brief_time", "09:00"))
+        ttk.Combobox(r4, textvariable=self.brief_time, values=App.BRIEF_TIMES, width=6, state="readonly").pack(side="left", padx=4)
+        self.chick_react = tk.BooleanVar(value=st.get("chick_react", True))
+        ttk.Checkbutton(cf, text="병아리 반응 (많이 처리하면 축하 춤, 기한 지난 일이 쌓이면 걱정)", variable=self.chick_react).pack(anchor="w", pady=(4, 0))
         ttk.Label(cf, style="Sub.TLabel", justify="left", text=(
+            "병아리를 한 번 누르면 '무슨 할 말 있어요?' → '금요일 3시 회의' 처럼 적으면 달력에 바로 올라가요.\n"
             "말풍선 버튼:  [완료] = 달력에 처리 완료(가운데 줄)  ·  [진행중] = 위에서 정한 시간 뒤 다시\n"
             "               [알람끄기] = 그 일은 더 이상 안 물어봄 (일정 우클릭 메뉴에서 다시 켤 수 있어요)")).pack(anchor="w", pady=(8, 0))
 
@@ -952,6 +971,8 @@ class SettingsDialog:
             "chick_checkin_every": int(self.chick_every.get().rstrip("시간")),
             "chick_progress_hours": int(self.chick_later.get().rstrip("시간")),
             "chick_range": {t: d for d, t in App.CHICK_RANGE}[self.chick_range.get()],
+            "work_type": self.work_type.get(), "brief_on": self.brief_on.get(), "brief_time": self.brief_time.get(),
+            "chick_react": self.chick_react.get(),
             "watch_downloads": self.dl_on.get(), "download_dir": dl,
             "widgets": {"desk": self.w_desk.get(), "list": self.w_list.get()},
             "team_theme": self.team_theme.get(),
@@ -2556,6 +2577,9 @@ class App:
         self.chick_retry = []                           # [(다시 물을 시각, 일정 id, 단계, 횟수)]
         self.chick_snooze = {}                          # [진행중] 누른 일: id -> 다시 물을 시각
         self._bridge_mtime = None
+        self._bridge_written = {}
+        self._done_today = ["", 0]
+        self._react_days = {}
         self.chick_sync_out()
         every = dt.timedelta(hours=int(self.settings.get("chick_checkin_every", 2)))
         self._last_checkin = dt.datetime.now() - every + dt.timedelta(minutes=3)   # 켜고 3분 뒤 첫 확인
@@ -2878,7 +2902,9 @@ class App:
         self.pending_select_id = None
         self.show_detail()
 
-        self.soon_events = self.store.upcoming(self.today, 14)
+        soon = self.store.upcoming(self.today, 14)
+        late = sum(1 for e in soon if core.dday(e["date"], self.today) <= 3)
+        self.soon_events = soon[:200]                   # 너무 많으면 앞의 200개만 (목록이 느려지지 않게)
         self.soon_list.delete(0, "end")
         for ev in self.soon_events:
             n = core.dday(ev["date"], self.today)
@@ -2887,7 +2913,6 @@ class App:
                 self.soon_list.itemconfig("end", fg="#a12622")
             elif n <= 3:
                 self.soon_list.itemconfig("end", fg="#7a5b00")
-        late = sum(1 for e in self.soon_events if core.dday(e["date"], self.today) <= 3)
         self.nb.tab(1, text=" ⏰ 임박한 기한 %s" % (("(%d) " % late) if late else ""))
 
     def current_event(self):
@@ -3207,8 +3232,11 @@ class App:
 
     def set_done_toggle(self, ev):
         self.pending_select_id = ev["id"]
+        was = bool(ev.get("done"))
         self.store.toggle_done(ev["id"])
         self.refresh()
+        if not was:
+            self.chick_on_done()
 
     def set_mine_toggle(self, ev):
         self.pending_select_id = ev["id"]
@@ -3611,9 +3639,35 @@ class App:
 
     # ---- 병아리대원 설정창의 '달력 알람' 탭과 설정 주고받기 (달력연결\settings.txt, upcoming.txt)
     CHICK_KEYS = {"checkin": "chick_checkin", "every": "chick_checkin_every", "range": "chick_range",
-                  "progress": "chick_progress_hours", "workhours": "chick_workhours", "alerts": "chick_alerts"}
+                  "progress": "chick_progress_hours", "workhours": "chick_workhours", "alerts": "chick_alerts",
+                  "brief": "brief_on", "brief_time": "brief_time", "work_type": "work_type", "react": "chick_react"}
     CHICK_DEFAULTS = {"chick_checkin": True, "chick_checkin_every": 2, "chick_range": 1, "chick_progress_hours": 4,
-                      "chick_workhours": True, "chick_alerts": True}
+                      "chick_workhours": True, "chick_alerts": True,
+                      "brief_on": True, "brief_time": "09:00", "work_type": "", "chick_react": True}
+    BRIEF_TIMES = ["%02d:%02d" % (h, m) for h in range(6, 12) for m in (0, 30)]
+
+    def chick_value_out(self, sk):
+        s = self.settings
+        if sk == "work_type":
+            return core.work_type(s)
+        v = s.get(sk, self.CHICK_DEFAULTS[sk])
+        if isinstance(self.CHICK_DEFAULTS[sk], bool):
+            return "1" if v else "0"
+        if isinstance(self.CHICK_DEFAULTS[sk], int):
+            return str(int(v))
+        return str(v)
+
+    def chick_value_in(self, sk, v):
+        d = self.CHICK_DEFAULTS[sk]
+        if isinstance(d, bool):
+            return v == "1"
+        if isinstance(d, int):
+            return int(v) if v.isdigit() else d
+        if sk == "brief_time":
+            return v if re.fullmatch(r"\d{2}:\d{2}", v) else d
+        if sk == "work_type":
+            return v if v in ("day", "shift") else self.settings.get("work_type", "")
+        return v
 
     def chick_sync_out(self, force=False):
         """달력 쪽 설정과 '지금 챙길 일' 목록을 병아리대원이 볼 수 있게 적는다"""
@@ -3623,9 +3677,9 @@ class App:
         s = self.settings
         lines = []
         for k, sk in self.CHICK_KEYS.items():
-            v = s.get(sk, self.CHICK_DEFAULTS[sk])
-            lines.append("%s=%s" % (k, ("1" if v else "0") if isinstance(v, bool) else int(v)))
-        lines += ["muted=%d" % len(s.get("chick_muted", [])), "changed_by=calendar"]
+            lines.append("%s=%s" % (k, self.chick_value_out(sk)))
+        lines += ["has_team=%d" % (1 if s.get("my_team") and core.team_for(dt.date.today(), s) is not None else 0),
+                  "muted=%d" % len(s.get("chick_muted", [])), "changed_by=calendar"]
         today = dt.date.today()
         hi = today + dt.timedelta(days=int(s.get("chick_range", 1)))
         muted, now = set(s.get("chick_muted", [])), dt.datetime.now()
@@ -3646,9 +3700,13 @@ class App:
             os.makedirs(d, exist_ok=True)
             for name, body in (("upcoming.txt", rows[:40]), ("settings.txt", lines)):
                 path = os.path.join(d, name)
+                text = "\n".join(body) + "\n"
+                if not force and self._bridge_written.get(name) == text and os.path.exists(path):
+                    continue                            # 바뀐 게 없으면 다시 안 쓴다
                 with open(path + ".tmp", "w", encoding="utf-8") as f:
-                    f.write("\n".join(body) + "\n")
+                    f.write(text)
                 os.replace(path + ".tmp", path)
+                self._bridge_written[name] = text
             self._bridge_mtime = os.path.getmtime(os.path.join(d, "settings.txt"))
         except OSError:
             pass
@@ -3676,7 +3734,7 @@ class App:
         s = self.settings
         for k, sk in self.CHICK_KEYS.items():
             if k in vals:
-                s[sk] = (vals[k] == "1") if isinstance(self.CHICK_DEFAULTS[sk], bool) else int(vals[k] or 0)
+                s[sk] = self.chick_value_in(sk, vals[k])
         if vals.get("unmute_all") == "1":
             s["chick_muted"] = []
         core.save_settings(s)
@@ -3740,6 +3798,8 @@ class App:
         if not s.get("chick_checkin", True):
             return False
         now = dt.datetime.now()
+        if not core.is_work_day(now.date(), s):         # 쉬는 날엔 안 묻는다 (일근: 주말·공휴일 / 3교대: 내 팀 비번)
+            return False
         if s.get("chick_workhours", True) and not (9 <= now.hour < 18):
             return False
         every = dt.timedelta(hours=int(s.get("chick_checkin_every", 2)))
@@ -3798,15 +3858,148 @@ class App:
                 if ev is None or ev.get("done"):
                     del self.chick_asks[k]
                     changed = True
+        self.chick_memo_tick()
+        self.chick_brief_tick(now)
         if self.chick_checkin_due():                    # 주기적으로 '했어요?'
             self._last_checkin = now
             if gs.chick_running():
+                self.chick_worry_check()
                 for ev in self.chick_targets():
                     key = "%s~CHK~0~%s" % (ev["id"], now.strftime("%H%M%S"))
                     self.chick_asks[key] = self.chick_message(ev, "CHK")
                     changed = True
         if changed:
             self.chick_save_inbox()
+
+    # ---- 병아리에게 말로 메모 · 아침 브리핑 · 반응 ------------------------------------
+    def chick_tell(self, kind, text):
+        """병아리에게 말 시키기 (kind: say / dance / worry / cheer / brief). 병아리가 없으면 False"""
+        if not gs.chick_running():
+            return False
+        try:
+            gs.chick_say([(kind, text)])
+            return True
+        except OSError:
+            return False
+
+    @staticmethod
+    def short_day(d):
+        return "%d/%d(%s)" % (d.month, d.day, "월화수목금토일"[d.weekday()])
+
+    def chick_memo_tick(self):
+        """병아리를 눌러 '무슨 할 말 있어요?' 에 적은 말을 달력에 올린다 (memo_out.txt: 종류\t글)"""
+        if not os.path.exists(os.path.join(gs.chick_dir(), "memo_out.txt")):
+            return
+        for line in gs.chick_read_lines("memo_out.txt"):
+            kind, _, text = line.partition("\t")
+            kind, text = kind.strip(), text.strip()
+            if kind == "memo" and text:
+                self.add_spoken_memo(text)
+            elif kind == "today":
+                self.chick_tell("brief", self.brief_text(greet=False))
+
+    def add_spoken_memo(self, text):
+        r = core.parse_memo(text)
+        ev = {"date": r["date"].isoformat(), "time": r["time"], "kind": r["kind"], "title": r["title"][:80], "label": "",
+              "memo": "🐥 병아리대원에게 말한 메모: " + text, "done": False, "done_at": "", "color": ""}
+        self.store.add(ev)
+        self.pending_select_id = ev["id"]
+        self.refresh()
+        when = self.short_day(r["date"]) + (" " + r["time"] if r["time"] else "")
+        msg = "삐약! %s '%s' 달력에 적었어요!" % (when, ev["title"])
+        if not r["found"]:
+            msg += " (날짜가 없어서 오늘로 적었어요)"
+        if not self.chick_tell("say", msg):
+            Toast(self, "🐥 달력에 적었어요", "%s  %s" % (when, ev["title"]), timeout=5000)
+        self.chick_sync_out()
+
+    def brief_counts(self):
+        """(오늘 일, 이번 주 남은 일, 지난 미처리) — 처리 안 한 것만"""
+        today = dt.date.today()
+        sunday = today + dt.timedelta(days=6 - today.weekday())
+        lo = today - dt.timedelta(days=30)
+        tdy, week, over = [], [], []
+        for e in self.store.expanded(lo, sunday):
+            if e.get("done") or e.get("kind") == "변경전":
+                continue
+            try:
+                d = dt.date.fromisoformat(e["date"])
+            except (KeyError, ValueError):
+                continue
+            if d < today and d >= lo:
+                over.append(e)
+            elif d == today:
+                tdy.append(e)
+                week.append(e)
+            elif today < d <= sunday:
+                week.append(e)
+        tdy.sort(key=lambda e: e.get("time") or "99")
+        return tdy, week, over
+
+    def brief_text(self, greet=True):
+        tdy, week, over = self.brief_counts()
+        head = "좋은 아침이에요! ☀ " if greet else ""
+        if not (tdy or week or over):
+            return head + "오늘 · 이번 주 챙길 일이 없어요. 여유로운 하루 되세요 삐약~"
+        msg = head + "오늘 %d건 · 이번 주 %d건 · 지난 미처리 %d건이에요." % (len(tdy), len(week), len(over))
+        if tdy:
+            names = ", ".join(("%s %s" % (e["time"], ev_label(e).replace("↻ ", "")) if e.get("time") else ev_label(e).replace("↻ ", ""))[:24]
+                              for e in tdy[:2])
+            msg += " 오늘: " + names + (" 외 %d건" % (len(tdy) - 2) if len(tdy) > 2 else "")
+        return msg
+
+    def chick_brief_tick(self, now):
+        """아침 브리핑: 근무하는 날, 정한 시각이 지나서 처음 (하루 한 번)"""
+        s = self.settings
+        if not s.get("brief_on", True) or self._tick < 4:          # 켜자마자는 병아리가 뜰 때까지 조금 기다린다
+            return
+        today = now.date().isoformat()
+        if s.get("brief_last") == today:
+            return
+        hh, _, mm = str(s.get("brief_time", "09:00")).partition(":")
+        try:
+            start = now.replace(hour=int(hh), minute=int(mm), second=0, microsecond=0)
+        except ValueError:
+            start = now.replace(hour=9, minute=0, second=0, microsecond=0)
+        if now < start or now.hour >= 18 or not core.is_work_day(now.date(), s):
+            return
+        s["brief_last"] = today
+        core.patch_settings({"brief_last": today})
+        text = self.brief_text()
+        if not self.chick_tell("brief", text):
+            Toast(self, "☀ 아침 브리핑", text.replace("좋은 아침이에요! ☀ ", "").replace(" 오늘: ", "\n오늘: "),
+                  color="#d98200", timeout=12000)
+        _, _, over = self.brief_counts()
+        if len(over) >= 3:
+            self._react_days["worry"] = today              # 브리핑에서 이미 말했으니 오늘은 걱정 반응 안 함
+
+    def chick_worry_check(self):
+        """기한 지난 일이 3건 넘게 쌓이면 걱정 (하루 한 번)"""
+        if not self.settings.get("chick_react", True):
+            return
+        today = dt.date.today().isoformat()
+        if self._react_days.get("worry") == today:
+            return
+        _, _, over = self.brief_counts()
+        if len(over) >= 3 and self.chick_tell("worry", "삐약… 기한 지난 일이 %d건이나 쌓였어요 ㅠㅠ 하나씩 같이 해치워요!" % len(over)):
+            self._react_days["worry"] = today
+
+    def chick_on_done(self):
+        """완료할 때마다: 하루 5건 · 10건이면 축하 춤, 챙길 일을 다 끝내면 응원"""
+        if not self.settings.get("chick_react", True):
+            return
+        today = dt.date.today().isoformat()
+        if self._done_today[0] != today:
+            self._done_today = [today, 0]
+        self._done_today[1] += 1
+        n = self._done_today[1]
+        if n in (5, 10, 20):
+            self.chick_tell("dance", "삐약삐약! 오늘 벌써 %d건 처리했어요! 🎉 최고예요~" % n)
+            return
+        if self._react_days.get("alldone") != today:
+            tdy, _, over = self.brief_counts()
+            if not tdy and not over and self.chick_tell("cheer", "오늘 챙길 일 다 끝냈어요! 수고했어요 삐약~ 🎉"):
+                self._react_days["alldone"] = today
 
     def show_alerts(self, items):
         if self.settings.get("chick_alerts", True) and gs.chick_running():    # 병아리대원이 나와 있으면 병아리가 묻는다
@@ -3879,6 +4072,9 @@ def selftest():
             app.root.update()
             w.win.destroy()
         out.append("dialogs ok")
+        m = core.parse_memo("금요일 3시 회의")
+        out.append("memo %s %s %s / brief: %s / workday=%s(%s)" % (m["date"], m["time"], m["title"], app.brief_text(),
+                                                                core.is_work_day(dt.date.today(), app.settings), core.work_type(app.settings)))
         x = core.data_path("selftest.xlsx")
         core.export_xlsx([], x)
         os.remove(x)

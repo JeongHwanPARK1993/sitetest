@@ -758,6 +758,18 @@ public class MascotForm : Form
 			{
 				//IL_001f: Unknown result type (might be due to invalid IL or missing references)
 				//IL_0029: Invalid comparison between Unknown and I4
+				bool talkClick = false;
+				if (dragging && !giftActive && !focusMode && (int)e.Button == 1048576)
+				{
+					Point mp = Control.MousePosition;
+					int ddx = mp.X - dragGestureStartPos.X;
+					int ddy = mp.Y - dragGestureStartPos.Y;
+					talkClick = ddx * ddx + ddy * ddy <= 36 && (DateTime.Now - mouseDownTime).TotalMilliseconds < 600.0;
+				}
+				if (talkClick)
+				{
+					((Control)this).BeginInvoke((Action)OpenTalkBox);   // 놓기 처리가 끝난 뒤 '무슨 할 말 있어요?'
+				}
 				if (dragging && (giftActive || focusMode) && (int)e.Button == 1048576)
 				{
 					Point mousePosition = Control.MousePosition;
@@ -2046,6 +2058,104 @@ public class MascotForm : Form
 	public void SayCalendar(string text)
 	{
 		ShowSpeech(text, 4000);
+	}
+
+	private TalkBoxForm talkBox;
+
+	private Timer hopTimer;
+
+	private int hopsLeft;
+
+	/// <summary>말풍선을 보여 주는 중이거나 달력 질문 중인가 (그동안은 달력 말을 미룬다)</summary>
+	public bool SpeechBusy => speechTicksRemaining > 0 || state == MascotState.Alerting || talkBox != null;
+
+	/// <summary>병아리를 한 번 누르면: 달력과 연결돼 있으면 '무슨 할 말 있어요?' 창</summary>
+	private void OpenTalkBox()
+	{
+		if (!CalendarBridge.Linked)
+		{
+			ShowSpeech("삐약? 업무보조 달력에서 [병아리대원 출동]을 누르면 메모도 받아 적을 수 있어요!", 5000);
+			RedrawNow();
+			return;
+		}
+		if (talkBox != null)
+		{
+			talkBox.Activate();
+			return;
+		}
+		ShowSpeech("삐약! 무슨 할 말 있어요?", 3000);
+		RedrawNow();
+		talkBox = new TalkBoxForm(delegate(string text)
+		{
+			CalendarBridge.SendMemo("memo", text);
+			ShowSpeech(CalendarBridge.CalendarRunning ? "받아 적는 중이에요… 삐약!" : "달력이 꺼져 있어요. 달력을 켜면 바로 적을게요!", 4000);
+			RedrawNow();
+		}, delegate
+		{
+			CalendarBridge.SendMemo("today", "");
+			ShowSpeech(CalendarBridge.CalendarRunning ? "잠깐만요, 달력 보고 올게요!" : "달력이 꺼져 있어서 볼 수가 없어요 ㅠㅠ", 4000);
+			RedrawNow();
+		});
+		((Form)talkBox).FormClosed += (FormClosedEventHandler)delegate
+		{
+			talkBox = null;
+		};
+		talkBox.ShowNear(((Control)this).Bounds);
+	}
+
+	/// <summary>달력이 시킨 반응. kind: say / brief / dance(축하 춤) / cheer(응원) / worry(걱정)</summary>
+	public void CalendarReact(string kind, string text)
+	{
+		int ms = (kind == "brief") ? 15000 : ((kind == "worry") ? 9000 : 6000);
+		bool canMove = !quietMode && !focusMode && !dragging && !isDriving
+			&& (state == MascotState.Walking || state == MascotState.Idle);
+		if (kind == "worry" && canMove)
+		{
+			EnterState(MascotState.Idle);               // 걷다가 멈춰서 걱정
+			velX = 0;
+			stateTicksRemaining = Ticks(ms);
+			if (alertFrames.Count > 0)
+			{
+				selectedIdleFrame = alertFrames[rnd.Next(alertFrames.Count)];
+				selectedIdlePoseIndex = -1;
+			}
+		}
+		ShowSpeech(text, ms);
+		if (canMove && (kind == "dance" || kind == "cheer" || kind == "brief"))
+		{
+			Hop(kind == "dance" ? 5 : 1);
+		}
+		RedrawNow();
+	}
+
+	/// <summary>제자리에서 콩콩 뛰기 (축하 춤)</summary>
+	private void Hop(int times)
+	{
+		hopsLeft = times;
+		if (hopTimer == null)
+		{
+			hopTimer = new Timer();
+			hopTimer.Interval = 650;
+			hopTimer.Tick += delegate
+			{
+				if (hopsLeft <= 0 || dragging || focusMode || isDriving)
+				{
+					hopTimer.Stop();
+					return;
+				}
+				if (state != MascotState.Walking && state != MascotState.Idle)
+				{
+					return;                             // 아직 공중이면 내려올 때까지
+				}
+				hopsLeft--;
+				isThrown = false;
+				EnterState(MascotState.Airborne);
+				velX = (hopsLeft % 2 == 0) ? 2 : -2;    // 좌우로 번갈아 콩콩
+				velY = -13;
+			};
+		}
+		hopTimer.Stop();
+		hopTimer.Start();
 	}
 
 	private void DismissAlertNow()

@@ -62,17 +62,20 @@ jobs:
           os.makedirs(d, exist_ok=True)
           with open(os.path.join(d, "inbox.txt"), "w", encoding="utf-8") as f:
               f.write("test~D-1~0~000000\t삐약! 시험 질문이에요. 확인했어요?\n")
+          with open(os.path.join(d, "say.txt"), "w", encoding="utf-8") as f:
+              f.write("dance\t삐약삐약! 시험 축하 춤이에요!\n")       # 반응: 병아리가 읽고 지워야 한다
           p = subprocess.Popen([exe])
-          time.sleep(80)                      # 말풍선은 60초 동안 대답이 없으면 닫히고 'ignore' 를 적는다
+          time.sleep(100)                     # 반응(6초) 뒤 질문, 말풍선은 60초 동안 대답이 없으면 닫히고 'ignore' 를 적는다
           alive = p.poll() is None
           out = os.path.join(d, "outbox.txt")
           ans = open(out, encoding="utf-8-sig").read() if os.path.exists(out) else ""
           err = os.path.join(root, "error.log")
           errs = open(err, encoding="utf-8-sig").read() if os.path.exists(err) else ""
-          print("alive:", alive, "| outbox:", repr(ans), "| error.log:", errs[:3000])
+          said = not os.path.exists(os.path.join(d, "say.txt"))
+          print("alive:", alive, "| outbox:", repr(ans), "| say read:", said, "| error.log:", errs[:3000])
           p.kill()
           shutil.rmtree(root, ignore_errors=True)
-          if not alive or "test~D-1~0~000000\tignore" not in ans or errs:
+          if not alive or "test~D-1~0~000000\tignore" not in ans or errs or not said:
               sys.exit(1)
 
       - name: Self test on Windows

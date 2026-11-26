@@ -562,13 +562,13 @@ def chick_write_inbox(asks, later=""):
     os.replace(tmp, path)
 
 
-def chick_read_outbox():
-    """병아리대원이 적은 대답들 [(번호, 대답)]. 읽은 것은 지운다 (이름을 바꿔서 읽으니 사이에 적힌 대답도 안 잃는다)."""
+def chick_read_lines(name):
+    """병아리대원이 적은 파일(outbox.txt, memo_out.txt)을 읽고 지운다. 이름을 바꿔서 읽으니 사이에 적힌 줄도 안 잃는다."""
     d = chick_dir()
-    path = os.path.join(d, "outbox.txt")
+    path = os.path.join(d, name)
     if not os.path.exists(path):
         return []
-    reading = os.path.join(d, "outbox.reading")
+    reading = os.path.join(d, name + ".reading")
     try:
         os.replace(path, reading)
         with open(reading, "r", encoding="utf-8-sig") as f:
@@ -576,9 +576,24 @@ def chick_read_outbox():
         os.remove(reading)
     except OSError:
         return []
+    return [line for line in lines if line.strip()]
+
+
+def chick_say(items):
+    """병아리에게 할 말·반응 [(종류, 말)] 을 say.txt 에 덧붙인다. 종류: say / dance / worry / cheer / brief"""
+    d = chick_dir()
+    os.makedirs(d, exist_ok=True)
+    with open(os.path.join(d, "say.txt"), "a", encoding="utf-8") as f:
+        for kind, text in items:
+            f.write("%s\t%s\n" % (kind, text.replace("\t", " ").replace("\n", " ")))
+
+
+def chick_read_outbox():
+    """병아리대원이 적은 대답들 [(번호, 대답)]. 읽은 것은 지운다."""
     out = []
-    for line in lines:
+    for line in chick_read_lines("outbox.txt"):
         key, _, ans = line.partition("\t")
         if key.strip() and ans.strip():
             out.append((key.strip(), ans.strip()))
     return out
+

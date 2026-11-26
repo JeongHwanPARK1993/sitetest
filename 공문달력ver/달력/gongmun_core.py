@@ -1249,6 +1249,23 @@ def team_for(day, st):
     return pattern[(day - anchor).days % len(pattern)]
 
 
+def work_type(st):
+    """근무 형태: 'shift' = 3교대(내 팀 근무일), 'day' = 일근(평일). 내 팀을 안 정했으면 일근."""
+    wt = st.get("work_type")
+    if wt == "shift" and st.get("my_team") and team_for(dt.date.today(), st) is not None:
+        return "shift"
+    if wt in ("day", "shift"):
+        return "day"
+    return "shift" if st.get("my_team") and team_for(dt.date.today(), st) is not None else "day"
+
+
+def is_work_day(day, st):
+    """내가 근무하는 날인가 (아침 브리핑 · 병아리 '했어요?' 를 이날만)"""
+    if work_type(st) == "shift":
+        return team_for(day, st) == st.get("my_team")
+    return not _is_off(day)
+
+
 # ──────────────────────────────────────────────────────────────
 # 9. 공문 정리: 올린 공문(PDF 등)을 '공문정리\2026년\11월\' 폴더에 제목 이름으로 복사
 #    (온나라에서 받은 DOSDKML.pdf 같은 이름이 공문 제목으로 바뀌고, 연도·기안한 달별로 정리된다)
@@ -1488,3 +1505,124 @@ def export_xlsx(events, path, today=None):
         styles.append(st)
     gongmun_xlsx.write_xlsx(path, "업무처리현황", headers, rows, styles,
                             widths=[10, 8, 8, 12, 7, 60, 18, 16, 12, 40, 30, 30])
+
+
+# ──────────────────────────────────────────────────────────────
+# 15. 말로 쓴 메모 분석 ("금요일 3시 회의" -> 이번 금요일 15:00, '회의')
+#     병아리대원에게 말한 메모를 달력에 올릴 때 쓴다
+# ──────────────────────────────────────────────────────────────
+_M_YMD = re.compile(r"(\d{4})\s*[.\-/년]\s*(\d{1,2})\s*[.\-/월]\s*(\d{1,2})\s*일?\.?")
+_M_MD_KOR = re.compile(r"(\d{1,2})\s*월\s*(\d{1,2})\s*일")
+_M_MD = re.compile(r"(?<![\d.:])(\d{1,2})\s*[./]\s*(\d{1,2})(?![\d:])\.?(?:\s*\([월화수목금토일]\))?")
+_M_REL_DAY = re.compile(r"(오늘|금일|내일|명일|익일|모레|글피)")
+_M_WEEKDAY = re.compile(r"(?:(이번\s*주|금주|이번|다음\s*주|담주|차주|다다음\s*주)\s*)?([월화수목금토일])요일")
+_M_AFTER = re.compile(r"(\d{1,3})\s*(일|주)\s*(?:뒤|후)")
+_M_MONTH_DAY = re.compile(r"(이번\s*달|다음\s*달|담달)\s*(\d{1,2})\s*일")
+_M_DAY_ONLY = re.compile(r"(?<![\d월])(\d{1,2})\s*일(?!\s*(?:이내|간|마다|뒤|후|전|동안|째))")
+_M_TIME = re.compile(r"(오전|오후|아침|저녁|밤|낮|새벽)?\s*(\d{1,2})\s*시\s*(?:(\d{1,2})\s*분|(반))?")
+_M_CLOCK = re.compile(r"(오전|오후)?\s*(?<!\d)(\d{1,2}):(\d{2})(?!\d)")
+_M_NOON = re.compile(r"정오")
+_M_DEADLINE = ("까지", "마감", "제출", "회신", "보고", "기한", "송부", "신청")
+_M_PARTICLE = re.compile(r"^(?:에는|에|엔|까지|부터|에서|는|은|,|·|-|~)\s*|\s*(?:에는|에|엔|까지는|까지|부터|에서|,|·)$")
+
+
+def _next_weekday(today, wd, week_offset=None):
+    if week_offset is None:                             # 그냥 '금요일' = 오늘부터 가장 가까운 금요일
+        return today + dt.timedelta(days=(wd - today.weekday()) % 7)
+    monday = today - dt.timedelta(days=today.weekday())
+    return monday + dt.timedelta(weeks=week_offset, days=wd)
+
+
+def parse_memo(text, today=None):
+    """말로 쓴 메모에서 날짜·시간·내용을 뽑는다.
+    돌려주는 값: {"date": 날짜, "time": "HH:MM" 또는 "", "title": 내용, "kind": "메모"/"기한", "found": 날짜를 찾았나}"""
+    today = today or dt.date.today()
+    raw = re.sub(r"\s+", " ", (text or "").strip())
+    spans, day, tm = [], None, ""
+
+    def take(m):
+        spans.append(m.span())
+
+    for rx, fn in (
+        (_M_YMD, lambda m: _make_date(int(m.group(1)), int(m.group(2)), int(m.group(3)))),
+        (_M_MD_KOR, lambda m: _md(today, int(m.group(1)), int(m.group(2)))),
+        (_M_MONTH_DAY, lambda m: _month_day(today, 1 if "다음" in m.group(1) or "담" in m.group(1) else 0, int(m.group(2)))),
+        (_M_AFTER, lambda m: today + dt.timedelta(days=int(m.group(1)) * (7 if m.group(2) == "주" else 1))),
+        (_M_WEEKDAY, lambda m: _weekday_from(today, m.group(1), m.group(2))),
+        (_M_REL_DAY, lambda m: today + dt.timedelta(days={"오늘": 0, "금일": 0, "내일": 1, "명일": 1, "익일": 1, "모레": 2, "글피": 3}[m.group(1)])),
+        (_M_MD, lambda m: _md(today, int(m.group(1)), int(m.group(2)))),
+        (_M_DAY_ONLY, lambda m: _month_day(today, 0 if int(m.group(1)) >= today.day else 1, int(m.group(1)))),
+    ):
+        if day is not None:
+            break
+        for m in rx.finditer(raw):
+            if any(a < m.end() and m.start() < b for a, b in spans):
+                continue
+            d = fn(m)
+            if d:
+                day = d
+                take(m)
+                break
+
+    m = _M_CLOCK.search(raw)
+    if m and not any(a < m.end() and m.start() < b for a, b in spans):
+        h, mi = int(m.group(2)), int(m.group(3))
+        if m.group(1) == "오후" and h < 12:
+            h += 12
+        if h <= 23 and mi <= 59:
+            tm = "%02d:%02d" % (h, mi)
+            take(m)
+    if not tm:
+        m = _M_TIME.search(raw)
+        if m and not any(a < m.end() and m.start() < b for a, b in spans):
+            h = int(m.group(2))
+            mi = 30 if m.group(4) else int(m.group(3) or 0)
+            ap = m.group(1)
+            if ap in ("오후", "저녁", "밤") and h < 12:
+                h += 12
+            elif ap is None and 1 <= h <= 7:
+                h += 12                                 # '3시 회의' 는 보통 오후 3시
+            if h <= 23 and mi <= 59:
+                tm = "%02d:%02d" % (h, mi)
+                take(m)
+    if not tm:
+        m = _M_NOON.search(raw)
+        if m:
+            tm = "12:00"
+            take(m)
+
+    title = raw
+    for a, b in sorted(spans, reverse=True):
+        title = title[:a] + " " + title[b:]
+    title = re.sub(r"\s+", " ", title).strip()
+    for _ in range(3):
+        title = _M_PARTICLE.sub("", title).strip()
+    kind = "기한" if any(w in raw for w in _M_DEADLINE) else "메모"
+    return {"date": day or today, "time": tm, "title": title or raw, "kind": kind, "found": day is not None}
+
+
+def _md(today, m, d):
+    """연도 없는 월·일: 지난 지 오래(6개월 넘게)됐으면 내년으로"""
+    x = _make_date(today.year, m, d)
+    if x and (today - x).days > 180:
+        x = _make_date(today.year + 1, m, d)
+    return x
+
+
+def _month_day(today, month_offset, d):
+    y, m = today.year, today.month + month_offset
+    if m > 12:
+        y, m = y + 1, m - 12
+    return _make_date(y, m, d)
+
+
+def _weekday_from(today, prefix, wd_name):
+    wd = "월화수목금토일".index(wd_name)
+    p = re.sub(r"\s+", "", prefix or "")
+    if p in ("다음주", "담주", "차주"):
+        return _next_weekday(today, wd, 1)
+    if p == "다다음주":
+        return _next_weekday(today, wd, 2)
+    if p in ("이번주", "금주", "이번"):
+        return _next_weekday(today, wd, 0)
+    return _next_weekday(today, wd)
